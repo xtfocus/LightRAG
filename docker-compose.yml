@@ -14,6 +14,7 @@ services:
       - ./data/inputs:/app/data/inputs
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
+      - ./test_langfuse.py:/app/test_langfuse.py
     env_file:
       - .env
     restart: unless-stopped
