@@ -26,6 +26,7 @@ from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
 from lightrag.utils import generate_track_id
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
+from .processing_types import get_processor
 
 
 # Function to format datetime to ISO format string with timezone information
@@ -978,9 +979,71 @@ async def pipeline_enqueue_file(
         # Process based on file type
         try:
             match ext:
+                case ".txt":
+                    # Use the processor for .txt files
+                    processor = get_processor(ext)
+                    if processor:
+                        result = await processor.process_file(
+                            file_path, file, file_size, track_id
+                        )
+                        if result.success:
+                            content = result.content
+                        else:
+                            # Convert ProcessingResult error to error_files format
+                            error_files = [
+                                {
+                                    "file_path": str(file_path.name),
+                                    "error_description": result.error_description or "[File Extraction]TXT processing error",
+                                    "original_error": result.original_error or "Unknown error",
+                                    "file_size": file_size,
+                                }
+                            ]
+                            await rag.apipeline_enqueue_error_documents(
+                                error_files, track_id
+                            )
+                            logger.error(
+                                f"[File Extraction]{result.error_description or 'Error'} in file: {file_path.name}"
+                            )
+                            return False, track_id
+                    else:
+                        # Fallback to original logic if processor not found
+                        try:
+                            content = file.decode("utf-8")
+                            if not content or len(content.strip()) == 0:
+                                error_files = [
+                                    {
+                                        "file_path": str(file_path.name),
+                                        "error_description": "[File Extraction]Empty file content",
+                                        "original_error": "File contains no content or only whitespace",
+                                        "file_size": file_size,
+                                    }
+                                ]
+                                await rag.apipeline_enqueue_error_documents(
+                                    error_files, track_id
+                                )
+                                logger.error(
+                                    f"[File Extraction]Empty content in file: {file_path.name}"
+                                )
+                                return False, track_id
+                        except UnicodeDecodeError as e:
+                            error_files = [
+                                {
+                                    "file_path": str(file_path.name),
+                                    "error_description": "[File Extraction]UTF-8 encoding error, please convert it to UTF-8 before processing",
+                                    "original_error": f"File is not valid UTF-8 encoded text: {str(e)}",
+                                    "file_size": file_size,
+                                }
+                            ]
+                            await rag.apipeline_enqueue_error_documents(
+                                error_files, track_id
+                            )
+                            logger.error(
+                                f"[File Extraction]File {file_path.name} is not valid UTF-8 encoded text. Please convert it to UTF-8 before processing."
+                            )
+                            return False, track_id
+                
                 case (
-                    ".txt"
-                    | ".md"
+                    ".md"
                     | ".html"
                     | ".htm"
                     | ".tex"
