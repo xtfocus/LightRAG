@@ -25,6 +25,31 @@ services:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    develop:
+      watch:
+        # Sync source code changes and restart container for hot reload
+        - action: sync+restart
+          path: ./lightrag
+          target: /app/lightrag
+          ignore:
+            - __pycache__/
+            - "*.pyc"
+            - "*.pyo"
+            - "*.pyd"
+            - .pytest_cache/
+            - .mypy_cache/
+            - .ruff_cache/
+        # Rebuild image when dependencies change
+        - action: rebuild
+          path: ./pyproject.toml
+        - action: rebuild
+          path: ./uv.lock
+        - action: rebuild
+          path: ./setup.py
+        # Sync and restart on config changes
+        - action: sync+restart
+          path: ./config.ini
+          target: /app/config.ini
 
   postgres:
     build:
