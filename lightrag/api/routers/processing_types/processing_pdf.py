@@ -297,7 +297,14 @@ async def describe_image(
         Image description string, or None if all retries failed
     """
     try:
-        prompt = "Describe this image in detail, including any text, charts, diagrams, or meaningful visual elements."
+        prompt = (
+            "You are transcribing an infographic or PDF page snapshot. "
+            "Convert every visible element into text, preserving structure. "
+            "Transcribe ALL readable text verbatim (word-for-word, including headings, labels, legends, footnotes, and data). "
+            "Describe charts, tables, or icons with enough detail that a reader could recreate them. "
+            "If layout matters (columns, bullet lists, timelines), explain the ordering. "
+            "Do not summarize—provide a faithful textual rendering of the entire image."
+        )
         description = await _call_azure_openai_vision(image_base64, prompt)
         return description.strip() if description else None
     except Exception as e:
