@@ -8,10 +8,12 @@ Each file type has its own processor module that implements a common interface.
 from .base_processor import BaseFileProcessor, ProcessingResult
 from .processor_registry import ProcessorRegistry, get_processor, register_processor
 from .processing_txt import TxtFileProcessor
+from .processing_excel import ExcelFileProcessor
 
 # Register all processors
 _processor_instances = [
     TxtFileProcessor(),
+    ExcelFileProcessor()
 ]
 
 # Auto-register all processors
@@ -25,4 +27,3 @@ __all__ = [
     "get_processor",
     "register_processor",
 ]
-
