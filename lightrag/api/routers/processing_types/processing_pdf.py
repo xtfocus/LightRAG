@@ -81,11 +81,15 @@ def render_pdf_page_to_image(pdf_bytes: bytes, page_index: int) -> "Image.Image"
     import pypdfium2 as pdfium  # type: ignore
 
     pdf_doc = pdfium.PdfDocument(BytesIO(pdf_bytes))
-    page = pdf_doc[page_index]
-    pil_image = page.render_topil(scale=2.0)
-    page.close()
-    pdf_doc.close()
-    return pil_image
+    try:
+        page = pdf_doc[page_index]
+        bitmap = page.render(scale=2.0, rotation=0)
+        pil_image = bitmap.to_pil()
+        bitmap.close()
+        page.close()
+        return pil_image
+    finally:
+        pdf_doc.close()
 
 
 def _get_azure_openai_config() -> tuple[str, str, str, str]:
