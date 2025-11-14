@@ -34,6 +34,7 @@ Makefile
 /output_complete
 /rag_storage
 /inputs
+/notebooks
 
 # Python version manager file
 .python-version

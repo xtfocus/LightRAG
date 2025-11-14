@@ -13,29 +13,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pipmaster as pm
+from openai import (APIConnectionError, APITimeoutError, AsyncAzureOpenAI,
+                    RateLimitError)
 from pydantic import BaseModel
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
+from tenacity import (retry, retry_if_exception_type, stop_after_attempt,
+                      wait_exponential)
 
-from lightrag.utils import logger
 from lightrag.llm.azure_openai import _azure_openai_complete_inner
-from openai import (
-    AsyncAzureOpenAI,
-    RateLimitError,
-    APIConnectionError,
-    APITimeoutError,
-)
+from lightrag.utils import logger
 
 from ...config import global_args
 from .base_processor import BaseFileProcessor, ProcessingResult
 
+global_args.document_loading_engine == "DOCLING"
+
 if TYPE_CHECKING:
-    from pypdf._page import ImageFile
     from PIL import Image
+    from pypdf._page import ImageFile
 
 # Minimum image dimension threshold for significance check
 MIN_IMG_DIMENSION = 100
@@ -43,50 +37,44 @@ MIN_IMG_DIMENSION = 100
 
 def _get_azure_openai_config() -> tuple[str, str, str, str]:
     """Get Azure OpenAI configuration from environment or global_args.
-    
+
     Returns:
         Tuple of (deployment, base_url, api_key, api_version)
     """
     deployment = (
-        os.getenv("AZURE_OPENAI_DEPLOYMENT")
-        or global_args.llm_model
-        or "gpt-4o"
+        os.getenv("AZURE_OPENAI_DEPLOYMENT") or global_args.llm_model or "gpt-4o"
     )
-    base_url = (
-        os.getenv("AZURE_OPENAI_ENDPOINT")
-        or global_args.llm_binding_host
-    )
-    api_key = (
-        os.getenv("AZURE_OPENAI_API_KEY")
-        or global_args.llm_binding_api_key
-    )
-    api_version = (
-        os.getenv("AZURE_OPENAI_API_VERSION")
-        or os.getenv("OPENAI_API_VERSION")
+    base_url = os.getenv("AZURE_OPENAI_ENDPOINT") or global_args.llm_binding_host
+    api_key = os.getenv("AZURE_OPENAI_API_KEY") or global_args.llm_binding_api_key
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION") or os.getenv(
+        "OPENAI_API_VERSION"
     )
     return deployment, base_url, api_key, api_version
 
 
 class ImageJudgment(BaseModel):
     """Pydantic model for structured image judgment response."""
+
     is_trivial: bool
     needs_retry: bool
     is_substantial: bool
     reason: str
 
 
-def check_image_significance(width: int, height: int, min_dimension: int = MIN_IMG_DIMENSION) -> bool:
+def check_image_significance(
+    width: int, height: int, min_dimension: int = MIN_IMG_DIMENSION
+) -> bool:
     """Check if an image is significant based on its dimensions.
-    
+
     Filters out trivial images like thin lines, small icons, or decorative elements
     that are too small in one or both dimensions.
-    
+
     Args:
         width: Image width in pixels
         height: Image height in pixels
         min_dimension: Minimum dimension threshold (default: MIN_IMG_DIMENSION)
             Images smaller than this in width, height, or both are considered trivial.
-    
+
     Returns:
         True if the image is significant (should be processed),
         False if the image is trivial (too thin, too tall, or too small).
@@ -97,19 +85,19 @@ def check_image_significance(width: int, height: int, min_dimension: int = MIN_I
     # - Both dimensions are too small (tiny icon/decorative element)
     if width < min_dimension or height < min_dimension:
         return False
-    
+
     return True
 
 
 def get_significant_images(page) -> list["ImageFile"]:
     """Extract and filter significant images from a PDF page.
-    
+
     Iterates through all images in the page, checks their dimensions,
     and returns only those that are significant (not trivial icons, lines, etc.).
-    
+
     Args:
         page: A pypdf page object containing images in page.images
-    
+
     Returns:
         List of significant ImageFile objects from page.images that meet
         the minimum dimension requirements.
@@ -117,15 +105,15 @@ def get_significant_images(page) -> list["ImageFile"]:
     if not pm.is_installed("Pillow"):  # type: ignore
         pm.install("Pillow")
     from PIL import Image  # type: ignore
-    
+
     significant_images = []
-    
+
     for img in page.images:
         try:
             # Extract image data and open with PIL
             pil_image = Image.open(BytesIO(img.data))
             width, height = pil_image.size
-            
+
             # Check if image is significant
             if check_image_significance(width, height):
                 significant_images.append(img)
@@ -135,39 +123,42 @@ def get_significant_images(page) -> list["ImageFile"]:
                 f"[File Extraction]Could not read dimensions for image {img.name}: {e}"
             )
             continue
-    
+
     return significant_images
 
 
 def image_to_base64(pil_image) -> str:
     """Convert PIL Image to base64 string.
-    
+
     Args:
         pil_image: PIL Image object
-    
+
     Returns:
         Base64 encoded string (without data URI prefix)
     """
     if not pm.is_installed("Pillow"):  # type: ignore
         pm.install("Pillow")
     from PIL import Image  # type: ignore
-    
+
     # Convert RGBA to RGB if needed (for JPEG compatibility)
     if pil_image.mode in ("RGBA", "LA", "P"):
         # Create white background
         rgb_image = Image.new("RGB", pil_image.size, (255, 255, 255))
         if pil_image.mode == "P":
             pil_image = pil_image.convert("RGBA")
-        rgb_image.paste(pil_image, mask=pil_image.split()[-1] if pil_image.mode in ("RGBA", "LA") else None)
+        rgb_image.paste(
+            pil_image,
+            mask=pil_image.split()[-1] if pil_image.mode in ("RGBA", "LA") else None,
+        )
         pil_image = rgb_image
     elif pil_image.mode != "RGB":
         pil_image = pil_image.convert("RGB")
-    
+
     # Convert to bytes
     img_buffer = BytesIO()
     pil_image.save(img_buffer, format="JPEG")
     img_bytes = img_buffer.getvalue()
-    
+
     # Encode to base64
     return base64.b64encode(img_bytes).decode("utf-8")
 
@@ -178,33 +169,35 @@ async def _call_azure_openai_vision(
     system_prompt: str | None = None,
 ) -> str:
     """Helper function to call Azure OpenAI with vision messages.
-    
+
     Args:
         image_base64: Base64 encoded image string
         text_prompt: Text prompt for the vision model
         system_prompt: Optional system prompt
-    
+
     Returns:
         Response text from Azure OpenAI
     """
     # Get Azure OpenAI configuration
     deployment, base_url, api_key, api_version = _get_azure_openai_config()
-    
+
     # Build vision messages
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    messages.append({
-        "role": "user",
-        "content": [
-            {"type": "text", "text": text_prompt},
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
-            }
-        ]
-    })
-    
+    messages.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": text_prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+                },
+            ],
+        }
+    )
+
     # Prepare trace metadata
     default_model = global_args.llm_model or "gpt-4o"
     trace_metadata = {
@@ -214,7 +207,7 @@ async def _call_azure_openai_vision(
         "base_url": base_url,
         "enable_cot": False,
     }
-    
+
     # Call the inner function directly with vision messages
     return await _azure_openai_complete_inner(
         model=deployment or default_model,
@@ -233,18 +226,19 @@ async def _call_azure_openai_vision(
 @retry(
     stop=stop_after_attempt(10),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ) | retry_if_exception_type(Exception),
+    retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError))
+    | retry_if_exception_type(Exception),
 )
-async def describe_image(image_base64: str, image_index: int, page_num: int) -> str | None:
+async def describe_image(
+    image_base64: str, image_index: int, page_num: int
+) -> str | None:
     """Generate description for an image using Azure OpenAI Vision API.
-    
+
     Args:
         image_base64: Base64 encoded image string
         image_index: Index of image within the page (1-indexed)
         page_num: Page number (1-indexed)
-    
+
     Returns:
         Image description string, or None if all retries failed
     """
@@ -262,9 +256,8 @@ async def describe_image(image_base64: str, image_index: int, page_num: int) -> 
 @retry(
     stop=stop_after_attempt(10),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ) | retry_if_exception_type(Exception),
+    retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError))
+    | retry_if_exception_type(Exception),
 )
 async def _call_azure_openai_structured(
     prompt: str,
@@ -272,24 +265,24 @@ async def _call_azure_openai_structured(
     response_format: type[BaseModel],
 ) -> BaseModel:
     """Helper function to call Azure OpenAI with structured output (Pydantic model).
-    
+
     Args:
         prompt: Text prompt
         system_prompt: Optional system prompt
         response_format: Pydantic model class for structured output
-    
+
     Returns:
         Parsed Pydantic model instance
     """
     # Get Azure OpenAI configuration
     deployment, base_url, api_key, api_version = _get_azure_openai_config()
-    
+
     # Build messages
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
-    
+
     # Call the parse endpoint directly to get structured output
     default_model = global_args.llm_model or "gpt-4o"
     openai_async_client = AsyncAzureOpenAI(
@@ -298,19 +291,19 @@ async def _call_azure_openai_structured(
         api_key=api_key,
         api_version=api_version,
     )
-    
+
     try:
         response = await openai_async_client.beta.chat.completions.parse(
             model=deployment or default_model,
             messages=messages,
             response_format=response_format,
         )
-        
+
         # Get the parsed object
         parsed = response.choices[0].message.parsed
         if parsed is None:
             raise ValueError("Failed to parse structured response from Azure OpenAI")
-        
+
         return parsed
     finally:
         await openai_async_client.close()
@@ -319,16 +312,15 @@ async def _call_azure_openai_structured(
 @retry(
     stop=stop_after_attempt(10),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ) | retry_if_exception_type(Exception),
+    retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError))
+    | retry_if_exception_type(Exception),
 )
 async def judge_image(description: str) -> dict:
     """Judge if an image is trivial or substantial based on its description.
-    
+
     Args:
         description: Generated image description
-    
+
     Returns:
         Dictionary with keys: is_trivial, needs_retry, is_substantial, reason
     """
@@ -338,7 +330,7 @@ async def judge_image(description: str) -> dict:
 3. Is the description of sufficient quality?
 
 Description: {description}"""
-    
+
     try:
         # Use structured output with Pydantic model
         judgment = await _call_azure_openai_structured(
@@ -346,7 +338,7 @@ Description: {description}"""
             system_prompt="You are a helpful assistant that analyzes image descriptions.",
             response_format=ImageJudgment,
         )
-        
+
         return {
             "is_trivial": judgment.is_trivial,
             "needs_retry": judgment.needs_retry,
@@ -368,14 +360,14 @@ async def process_single_image(
     img: "ImageFile", image_index: int, page_num: int
 ) -> str | None:
     """Process a single image: extract, describe, judge, and format.
-    
+
     This function performs the loop: create description > review > retry if needed.
-    
+
     Args:
         img: ImageFile object from pypdf
         image_index: Index of image within the page (1-indexed)
         page_num: Page number (1-indexed)
-    
+
     Returns:
         Formatted description string like "Image x page y: {description}",
         or None if image is trivial or processing failed
@@ -383,14 +375,14 @@ async def process_single_image(
     if not pm.is_installed("Pillow"):  # type: ignore
         pm.install("Pillow")
     from PIL import Image  # type: ignore
-    
+
     try:
         # Extract image data and convert to PIL Image
         pil_image = Image.open(BytesIO(img.data))
-        
+
         # Convert to base64
         image_base64 = image_to_base64(pil_image)
-        
+
         # Generate description
         description = await describe_image(image_base64, image_index, page_num)
         if not description:
@@ -398,10 +390,10 @@ async def process_single_image(
                 f"[File Extraction]Failed to generate description for image {image_index} on page {page_num}"
             )
             return None
-        
+
         # Judge the image
         judgment = await judge_image(description)
-        
+
         # If judge says we need retry, retry description generation
         if judgment.get("needs_retry", False):
             logger.info(
@@ -412,21 +404,21 @@ async def process_single_image(
                 return None
             # Re-judge after retry
             judgment = await judge_image(description)
-        
+
         # If image is trivial, skip it
         if judgment.get("is_trivial", False):
             logger.debug(
                 f"[File Extraction]Skipping trivial image {image_index} on page {page_num}: {judgment.get('reason', '')}"
             )
             return None
-        
+
         # If image is substantial, return formatted description
         if judgment.get("is_substantial", True):
             return f"Image {image_index} page {page_num}: {description}"
-        
+
         # Default: skip if not substantial
         return None
-        
+
     except Exception as e:
         logger.error(
             f"[File Extraction]Error processing image {image_index} on page {page_num}: {e}"
@@ -436,33 +428,33 @@ async def process_single_image(
 
 async def process_page_images(page, page_num: int) -> str:
     """Process all images from a PDF page concurrently.
-    
+
     Extracts significant images, processes them concurrently, and combines
     their descriptions into a single string.
-    
+
     Args:
         page: A pypdf page object
         page_num: Page number (1-indexed)
-    
+
     Returns:
         Combined image descriptions string, or empty string if no images
         or all images were filtered out
     """
     # Get significant images (already filtered by size)
     significant_images = get_significant_images(page)
-    
+
     if not significant_images:
         return ""
-    
+
     # Create tasks for concurrent processing
     tasks = []
     for image_index, img in enumerate(significant_images, 1):
         task = process_single_image(img, image_index, page_num)
         tasks.append(task)
-    
+
     # Process all images concurrently
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     # Filter out None results, exceptions, and combine descriptions
     image_descriptions = []
     for i, result in enumerate(results):
@@ -473,11 +465,11 @@ async def process_page_images(page, page_num: int) -> str:
             continue
         if result is not None:
             image_descriptions.append(result)
-    
+
     # Combine all descriptions with newlines
     if image_descriptions:
         return "\n".join(image_descriptions) + "\n"
-    
+
     return ""
 
 
@@ -581,7 +573,7 @@ class PdfFileProcessor(BaseFileProcessor):
                 for page_num, page in enumerate(reader.pages, 1):
                     # Extract text from page
                     page_text = page.extract_text()
-                    
+
                     # Process images from page (concurrent processing)
                     try:
                         image_descriptions = await process_page_images(page, page_num)
@@ -591,7 +583,7 @@ class PdfFileProcessor(BaseFileProcessor):
                             f"[File Extraction]Failed to process images on page {page_num}: {e}. Continuing with text extraction only."
                         )
                         image_descriptions = ""
-                    
+
                     # Combine page text and image descriptions
                     content += page_text + "\n" + image_descriptions
 
