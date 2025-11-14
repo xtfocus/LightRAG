@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 # Minimum image dimension threshold for significance check
 MIN_IMG_DIMENSION = 100
 INFOGRAPHIC_IMAGE_THRESHOLD = 10
+IMAGE_DESCRIPTION_RUNS = 3
 
 
 def get_page_visual_element_count(page: "PageObject") -> int:
@@ -277,6 +278,75 @@ async def _call_azure_openai_vision(
     )
 
 
+async def _call_azure_openai_chat(
+    prompt: str, system_prompt: str | None = None
+) -> str:
+    """Helper function to call Azure OpenAI for text-only chat completions."""
+    deployment, base_url, api_key, api_version = _get_azure_openai_config()
+
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+
+    messages.append({"role": "user", "content": prompt})
+
+    default_model = global_args.llm_model or "gpt-4o"
+    return await _azure_openai_complete_inner(
+        model=deployment or default_model,
+        prompt=prompt,
+        messages=messages,
+        base_url=base_url,
+        deployment=deployment or default_model,
+        api_key=api_key,
+        api_version=api_version,
+        timeout=None,
+        kwargs={},
+        trace_metadata={
+            "model": deployment or default_model,
+            "deployment": deployment or default_model,
+            "api_version": api_version,
+            "base_url": base_url,
+            "enable_cot": False,
+        },
+    )
+
+
+async def _generate_single_image_description(
+    image_base64: str, image_index: int, page_num: int, run_index: int
+) -> str | None:
+    prompt = (
+        "You are transcribing an infographic or PDF page snapshot. "
+        "Convert every visible element into text, preserving structure. "
+        "Transcribe ALL readable text verbatim (word-for-word, including headings, labels, legends, footnotes, and data). "
+        "Describe charts, tables, or icons with enough detail that a reader could recreate them. "
+        "If layout matters (columns, bullet lists, timelines), explain the ordering. "
+        "Do not summarize—provide a faithful textual rendering of the entire image."
+    )
+    description = await _call_azure_openai_vision(image_base64, prompt)
+    return description.strip() if description else None
+
+
+async def synthesize_image_descriptions(
+    descriptions: list[str], image_index: int, page_num: int
+) -> str | None:
+    prompt_sections = "\n\n".join(
+        f"Version {idx + 1}:\n{desc}" for idx, desc in enumerate(descriptions)
+    )
+    prompt = (
+        "You received multiple detailed transcriptions of the same infographic/page. "
+        "Combine them into ONE exhaustive transcription without losing any detail. "
+        "If different versions contain conflicting information, include all variants "
+        "and note the discrepancy. Preserve verbatim text, numeric values, and structure. "
+        "The final result must allow a reader to recreate the entire visual precisely.\n\n"
+        f"Transcriptions:\n{prompt_sections}"
+    )
+    combined = await _call_azure_openai_chat(
+        prompt,
+        system_prompt="You synthesize multiple OCR-like outputs into a single, lossless transcription.",
+    )
+    return combined.strip() if combined else None
+
+
 @retry(
     stop=stop_after_attempt(10),
     wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -286,32 +356,28 @@ async def _call_azure_openai_vision(
 async def describe_image(
     image_base64: str, image_index: int, page_num: int
 ) -> str | None:
-    """Generate description for an image using Azure OpenAI Vision API.
+    """Generate a detailed description for an image using multiple LLM passes."""
+    descriptions: list[str] = []
+    for run_index in range(IMAGE_DESCRIPTION_RUNS):
+        try:
+            description = await _generate_single_image_description(
+                image_base64, image_index, page_num, run_index
+            )
+            if description:
+                descriptions.append(description)
+        except Exception as e:
+            logger.error(
+                f"[File Extraction]Failed run {run_index + 1} describing image {image_index} on page {page_num}: {e}"
+            )
 
-    Args:
-        image_base64: Base64 encoded image string
-        image_index: Index of image within the page (1-indexed)
-        page_num: Page number (1-indexed)
-
-    Returns:
-        Image description string, or None if all retries failed
-    """
-    try:
-        prompt = (
-            "You are transcribing an infographic or PDF page snapshot. "
-            "Convert every visible element into text, preserving structure. "
-            "Transcribe ALL readable text verbatim (word-for-word, including headings, labels, legends, footnotes, and data). "
-            "Describe charts, tables, or icons with enough detail that a reader could recreate them. "
-            "If layout matters (columns, bullet lists, timelines), explain the ordering. "
-            "Do not summarize—provide a faithful textual rendering of the entire image."
-        )
-        description = await _call_azure_openai_vision(image_base64, prompt)
-        return description.strip() if description else None
-    except Exception as e:
-        logger.error(
-            f"[File Extraction]Failed to describe image {image_index} on page {page_num}: {e}"
-        )
+    if not descriptions:
         return None
+
+    if len(descriptions) == 1:
+        return descriptions[0]
+
+    combined = await synthesize_image_descriptions(descriptions, image_index, page_num)
+    return combined or descriptions[0]
 
 
 @retry(
