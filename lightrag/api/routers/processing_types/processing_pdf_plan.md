@@ -17,6 +17,31 @@ Enhance the PDF processor to extract and describe images from PDF pages using Az
 5. **Combine per page:** `page_text + "\n" + image_descriptions + "\n"`
 6. **Combine all pages:** Join all page contents into final `content`
 
+### End-to-End Flow (Mermaid)
+
+```mermaid
+flowchart TD
+    A["Uploaded PDF bytes/path<br/>PdfFileProcessor.process_file"] --> B{"document_loading_engine == 'DOCLING'?"}
+    B -->|Yes| C["docling.DocumentConverter<br/>convert -> export_to_markdown"]
+    C --> Z{"content.strip()?"}
+    B -->|No| D["Ensure pypdf + pycryptodome<br/>PdfReader(BytesIO(bytes))"]
+    D --> E{"reader.is_encrypted?"}
+    E -->|Yes| F["decrypt with PDF_DECRYPT_PASSWORD"]
+    F --> G["for page in enumerate(reader.pages, 1)"]
+    E -->|No| G
+    G --> H{"is_infographic_page(page)?"}
+    H -->|Yes| I["render_pdf_page_to_image<br/>image_to_base64<br/>describe_image()"]
+    I -->|description| J["append 'Infographic Page N' block<br/>continue next page"]
+    J --> G
+    I -->|failure| K["fallback to regular flow"]
+    H -->|No| K
+    K --> L["page_text = page.extract_text() or ''"]
+    L --> M["image_descriptions = process_page_images(page, n)"]
+    M --> N["append page_text + '\n' + image_descriptions"]
+    N --> G
+    Z -->|False/Empty| ERR["ProcessingResult failure:<br/>'[File Extraction]Empty file content'"]
+    Z -->|True| OK["ProcessingResult success<br/>content"]```
+
 ### Image Processing Pipeline (Per Image)
 
 ```
