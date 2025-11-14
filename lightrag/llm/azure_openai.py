@@ -354,15 +354,8 @@ async def azure_openai_complete_if_cache(
     }
 
     # Add debug logging similar to openai.py
-    logger.info(f"Azure OpenAI LLM call: Model={model}, Deployment={deployment}, API Version={api_version}")
-    logger.debug("===== Entering Azure OpenAI LLM function =====")
-    logger.debug(f"Model: {model}   Deployment: {deployment}")
-    logger.debug(f"Base URL: {base_url}   API Version: {api_version}")
-    logger.debug(f"Additional kwargs: {kwargs}")
-    logger.debug(f"Num of history messages: {len(history_messages) if history_messages else 0}")
     verbose_debug(f"System prompt: {system_prompt}")
     verbose_debug(f"Query: {prompt}")
-    logger.debug("===== Sending Query to Azure OpenAI LLM =====")
 
     # Call the inner function which is decorated with @observe
     # This ensures hashing_kv is not captured by Langfuse (it's removed from kwargs above)
