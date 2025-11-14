@@ -400,7 +400,6 @@ async def azure_openai_complete(
     return result
 
 
-@observe(name="azure-openai-embed", as_type="embedding")
 @wrap_embedding_func_with_attrs(embedding_dim=1536)
 @retry(
     stop=stop_after_attempt(3),
@@ -437,25 +436,6 @@ async def azure_openai_embed(
         or os.getenv("OPENAI_API_VERSION")
     )
 
-    # Prepare trace metadata
-    trace_metadata = {
-        "model": model,
-        "deployment": deployment,
-        "api_version": api_version,
-        "base_url": base_url,
-        "text_count": len(texts),
-        "total_text_length": sum(len(text) for text in texts),
-    }
-
-    # Add debug logging for embedding function
-    logger.info(f"Azure OpenAI Embedding call: Model={model}, Deployment={deployment}, Text count={len(texts)}")
-    logger.debug("===== Entering Azure OpenAI Embedding function =====")
-    logger.debug(f"Model: {model}   Deployment: {deployment}")
-    logger.debug(f"Base URL: {base_url}   API Version: {api_version}")
-    logger.debug(f"Text count: {len(texts)}   Total text length: {sum(len(text) for text in texts)}")
-    verbose_debug(f"Sample texts: {texts[:3] if len(texts) > 3 else texts}")
-    logger.debug("===== Sending texts to Azure OpenAI Embedding API =====")
-
     openai_async_client = AsyncAzureOpenAI(
         azure_endpoint=base_url,
         azure_deployment=deployment,
@@ -464,12 +444,9 @@ async def azure_openai_embed(
     )
 
     try:
-        logger.debug("Calling Azure OpenAI embeddings.create")
         response = await openai_async_client.embeddings.create(
             model=model, input=texts, encoding_format="float"
         )
-        logger.info("Azure OpenAI Embedding API response received")
-        logger.debug("Received response from Azure OpenAI Embedding API")
 
         # Validate response structure
         if not response or not hasattr(response, "data") or not response.data:
@@ -477,35 +454,6 @@ async def azure_openai_embed(
             raise ValueError("Invalid response from Azure OpenAI Embedding API")
 
         embeddings = np.array([dp.embedding for dp in response.data])
-
-        # Update trace with token usage and metadata
-        if LANGFUSE_ENABLED and get_langfuse_client:
-            try:
-                langfuse = get_langfuse_client()
-                trace_data = {
-                    "input": {
-                        "text_count": len(texts),
-                        "total_text_length": sum(len(text) for text in texts),
-                        "sample_texts": texts[:3] if len(texts) > 3 else texts,  # Include first 3 texts as sample
-                    },
-                    "output": {
-                        "embeddings_shape": list(embeddings.shape),
-                        "embedding_dim": int(embeddings.shape[1]) if len(embeddings.shape) > 1 else 0,
-                    },
-                    "metadata": trace_metadata,
-                }
-
-                # Add token usage if available
-                if hasattr(response, "usage") and response.usage:
-                    trace_data["metadata"]["usage"] = {
-                        "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
-                        "total_tokens": getattr(response.usage, "total_tokens", 0),
-                    }
-
-                langfuse.update_current_trace(**trace_data)
-            except Exception as trace_error:
-                # Don't fail the function if trace update fails
-                logger.warning(f"Failed to update Langfuse trace: {trace_error}")
 
         embedding_dim = int(embeddings.shape[1]) if len(embeddings.shape) > 1 else 0
         logger.info(f"Azure OpenAI embeddings generated: shape={embeddings.shape}, dimension={embedding_dim}")
