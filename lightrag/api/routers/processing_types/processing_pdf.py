@@ -29,10 +29,64 @@ global_args.document_loading_engine == "DOCLING"
 
 if TYPE_CHECKING:
     from PIL import Image
-    from pypdf._page import ImageFile
+    from pypdf._page import ImageFile, PageObject
 
 # Minimum image dimension threshold for significance check
 MIN_IMG_DIMENSION = 100
+INFOGRAPHIC_IMAGE_THRESHOLD = 10
+
+
+def get_page_visual_element_count(page: "PageObject") -> int:
+    """Count visual elements (images + form XObjects) on a page."""
+    count = len(getattr(page, "images", []))
+    try:
+        resources = page.get("/Resources")
+        if resources and "/XObject" in resources:
+            xobjects = resources["/XObject"]
+            if hasattr(xobjects, "keys"):
+                for key in xobjects.keys():
+                    obj = xobjects[key]
+                    if hasattr(obj, "get"):
+                        subtype = obj.get("/Subtype")
+                        if subtype == "/Form":
+                            count += 1
+    except Exception:
+        pass
+    return count
+
+
+def is_landscape_page(page: "PageObject") -> bool:
+    """Determine if a PDF page is landscape orientation."""
+    try:
+        width = float(page.mediabox.width)
+        height = float(page.mediabox.height)
+        return width > height
+    except Exception:
+        return False
+
+
+def is_infographic_page(page: "PageObject") -> bool:
+    """Determine if a page should be treated as an infographic."""
+    image_count = get_page_visual_element_count(page)
+    if is_landscape_page(page):
+        return True
+    if image_count > INFOGRAPHIC_IMAGE_THRESHOLD:
+        return True
+    return False
+
+
+def render_pdf_page_to_image(pdf_bytes: bytes, page_index: int) -> "Image.Image":
+    """Render a PDF page to a PIL Image using pypdfium2."""
+    if not pm.is_installed("pypdfium2"):  # type: ignore
+        pm.install("pypdfium2")
+    import pypdfium2 as pdfium  # type: ignore
+
+    pdf_doc = pdfium.PdfDocument(BytesIO(pdf_bytes))
+    page = pdf_doc[page_index]
+    pil_image = page.render_topil(scale=2.0)
+    page.close()
+    pdf_doc.close()
+    return pil_image
 
 
 def _get_azure_openai_config() -> tuple[str, str, str, str]:
@@ -570,9 +624,38 @@ class PdfFileProcessor(BaseFileProcessor):
                         )
 
                 # Extract text and images from PDF (encrypted PDFs are now decrypted, unencrypted PDFs proceed directly)
+                infographic_pages: list[int] = []
+
                 for page_num, page in enumerate(reader.pages, 1):
+                    infographic_page = is_infographic_page(page)
+
+                    if infographic_page:
+                        infographic_pages.append(page_num)
+                        try:
+                            full_page_image = render_pdf_page_to_image(
+                                file_bytes, page_num - 1
+                            )
+                            image_base64 = image_to_base64(full_page_image)
+                            description = await describe_image(
+                                image_base64, image_index=1, page_num=page_num
+                            )
+                            if description:
+                                content += (
+                                    f"[Infographic Page {page_num}]\n"
+                                    f"{description.strip()}\n"
+                                )
+                                continue
+                            else:
+                                logger.warning(
+                                    f"[File Extraction]Azure description empty for infographic page {page_num}, falling back to text extraction."
+                                )
+                        except Exception as e:
+                            logger.warning(
+                                f"[File Extraction]Failed to process infographic page {page_num}: {e}. Falling back to text extraction."
+                            )
+
                     # Extract text from page
-                    page_text = page.extract_text()
+                    page_text = page.extract_text() or ""
 
                     # Process images from page (concurrent processing)
                     try:
@@ -586,6 +669,11 @@ class PdfFileProcessor(BaseFileProcessor):
 
                     # Combine page text and image descriptions
                     content += page_text + "\n" + image_descriptions
+
+                if infographic_pages:
+                    logger.info(
+                        f"[File Extraction]Infographic pages detected for {file_path.name}: {infographic_pages}"
+                    )
 
             # Validate content
             if not content or len(content.strip()) == 0:
