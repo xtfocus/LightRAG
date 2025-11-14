@@ -8,7 +8,6 @@ that require password decryption.
 import asyncio
 import base64
 import os
-import tempfile
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -91,42 +90,6 @@ def render_pdf_page_to_image(pdf_bytes: bytes, page_index: int) -> "Image.Image"
         return pil_image
     finally:
         pdf_doc.close()
-
-
-def extract_docling_page_text(page: "PageObject", page_num: int) -> str | None:
-    """Extract markdown text for a single PDF page using Docling."""
-    tmp_path: Path | None = None
-    try:
-        if not pm.is_installed("docling"):  # type: ignore
-            pm.install("docling")
-        from docling.document_converter import DocumentConverter  # type: ignore
-
-        if not pm.is_installed("pypdf"):  # type: ignore
-            pm.install("pypdf")
-        from pypdf import PdfWriter  # type: ignore
-
-        writer = PdfWriter()
-        writer.add_page(page)
-
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_file:
-            writer.write(tmp_file)
-            tmp_path = Path(tmp_file.name)
-
-        converter = DocumentConverter()
-        result = converter.convert(tmp_path)
-        markdown = (result.document.export_to_markdown() or "").strip()
-        return markdown or None
-    except Exception as e:
-        logger.warning(
-            f"[File Extraction]Docling extraction failed for page {page_num}: {e}"
-        )
-        return None
-    finally:
-        if tmp_path and tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except Exception:
-                pass
 
 
 def _get_azure_openai_config() -> tuple[str, str, str, str]:
@@ -366,10 +329,7 @@ async def _generate_single_image_description(
 
 
 async def synthesize_image_descriptions(
-    descriptions: list[str],
-    image_index: int,
-    page_num: int,
-    docling_page_text: str | None = None,
+    descriptions: list[str], image_index: int, page_num: int
 ) -> str | None:
     prompt_sections = "\n\n".join(
         f"Version {idx + 1}:\n{desc}" for idx, desc in enumerate(descriptions)
@@ -382,11 +342,6 @@ async def synthesize_image_descriptions(
         "The final result must allow a reader to recreate the entire visual precisely.\n\n"
         f"Transcriptions:\n{prompt_sections}"
     )
-    if docling_page_text:
-        prompt += (
-            "\n\nDocling text extraction for this page:\n"
-            f"{docling_page_text}"
-        )
     combined = await _call_azure_openai_chat(
         prompt,
         system_prompt="You synthesize multiple OCR-like outputs into a single, lossless transcription.",
@@ -401,10 +356,7 @@ async def synthesize_image_descriptions(
     | retry_if_exception_type(Exception),
 )
 async def describe_image(
-    image_base64: str,
-    image_index: int,
-    page_num: int,
-    docling_page_text: str | None = None,
+    image_base64: str, image_index: int, page_num: int
 ) -> str | None:
     """Generate a detailed description for an image using multiple LLM passes."""
     descriptions: list[str] = []
@@ -423,12 +375,10 @@ async def describe_image(
     if not descriptions:
         return None
 
-    if len(descriptions) == 1 and not docling_page_text:
+    if len(descriptions) == 1:
         return descriptions[0]
 
-    combined = await synthesize_image_descriptions(
-        descriptions, image_index, page_num, docling_page_text=docling_page_text
-    )
+    combined = await synthesize_image_descriptions(descriptions, image_index, page_num)
     return combined or descriptions[0]
 
 
@@ -757,16 +707,12 @@ class PdfFileProcessor(BaseFileProcessor):
                     if infographic_page:
                         infographic_pages.append(page_num)
                         try:
-                            docling_page_text = extract_docling_page_text(page, page_num)
                             full_page_image = render_pdf_page_to_image(
                                 file_bytes, page_num - 1
                             )
                             image_base64 = image_to_base64(full_page_image)
                             description = await describe_image(
-                                image_base64,
-                                image_index=1,
-                                page_num=page_num,
-                                docling_page_text=docling_page_text,
+                                image_base64, image_index=1, page_num=page_num
                             )
                             if description:
                                 content += (
