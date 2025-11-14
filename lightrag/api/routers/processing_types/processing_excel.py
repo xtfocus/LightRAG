@@ -65,8 +65,8 @@ logger = getLogger(__name__)
 root = Path(__file__).resolve().parent
 env_path = root / ".env"
 dotenv.load_dotenv(env_path)
-LLM_API_BASE = os.getenv("LLM_API_BASE")
-LLM_API_TOKEN = os.getenv("LLM_API_TOKEN")
+LLM_API_BASE = os.getenv("AZURE_OPENAI_ENDPOINT")
+LLM_API_TOKEN = os.getenv("AZURE_OPENAI_API_KEY")
 
 def timer(logger=None):
     """
