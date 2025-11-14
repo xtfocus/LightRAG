@@ -25,8 +25,6 @@ from lightrag.utils import logger
 from ...config import global_args
 from .base_processor import BaseFileProcessor, ProcessingResult
 
-global_args.document_loading_engine == "DOCLING"
-
 if TYPE_CHECKING:
     from PIL import Image
     from pypdf._page import ImageFile, PageObject

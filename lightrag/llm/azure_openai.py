@@ -121,33 +121,23 @@ async def _azure_openai_complete_inner(
                 model=model, messages=messages, **kwargs
             )
         
-        logger.info("Azure OpenAI API response received")
-        logger.debug("Received response from Azure OpenAI API")
 
         if hasattr(response, "__aiter__"):
             # Streaming response - create a wrapper that collects data
-            logger.info("Azure OpenAI streaming response started")
-            logger.debug("Response is streaming")
             final_chunk_usage = None
             collected_content = []
 
             async def stream_inner():
                 nonlocal final_chunk_usage, collected_content
                 try:
-                    logger.debug("Starting to stream chunks from Azure OpenAI")
                     chunk_count = 0
                     async for chunk in response:
                         chunk_count += 1
                         # Check if this chunk has usage information (final chunk)
                         if hasattr(chunk, "usage") and chunk.usage:
                             final_chunk_usage = chunk.usage
-                            logger.debug(
-                                f"Received usage info in streaming chunk: {chunk.usage}"
-                            )
-
                         # Check if choices exists and is not empty
                         if not hasattr(chunk, "choices") or not chunk.choices:
-                            logger.warning(f"Received chunk without choices: {chunk}")
                             continue
 
                         # Check if delta exists
@@ -166,8 +156,6 @@ async def _azure_openai_complete_inner(
 
                     # Update trace after stream completes
                     # Note: This executes after the generator is exhausted
-                    logger.info(f"Azure OpenAI stream completed. Total chunks: {chunk_count}")
-                    logger.debug(f"Stream completed. Total chunks received: {chunk_count}")
                     if LANGFUSE_ENABLED and get_langfuse_client:
                         try:
                             langfuse = get_langfuse_client()
@@ -215,8 +203,6 @@ async def _azure_openai_complete_inner(
             return stream_inner()
         else:
             # Non-streaming response
-            logger.info("Azure OpenAI non-streaming response received")
-            logger.debug("Response is non-streaming")
             try:
                 # Validate response structure
                 if (
@@ -239,8 +225,6 @@ async def _azure_openai_complete_inner(
                 if r"\u" in content:
                     content = safe_unicode_decode(content.encode("utf-8"))
 
-                logger.info(f"Azure OpenAI response content length: {len(content)} characters")
-                logger.debug(f"Response content len: {len(content)}")
                 verbose_debug(f"Response: {content[:200]}..." if len(content) > 200 else f"Response: {content}")
                 
                 # Log token usage if available
