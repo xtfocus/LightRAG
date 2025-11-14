@@ -20,6 +20,36 @@ import time
 from typing import Tuple
 
 import dotenv
+import pipmaster as pm
+
+
+def _ensure_excel_dependencies() -> None:
+    """Ensure Excel processing dependencies are installed before import."""
+    dependency_specs: tuple[tuple[str, str], ...] = (
+        ("openpyxl", "openpyxl>=3.0.0,<4.0.0"),
+        ("pyxlsb", "pyxlsb>=1.0.9,<2.0.0"),
+        ("xlrd", "xlrd>=2.0.1,<3.0.0"),
+    )
+    dep_logger = logging.getLogger(__name__)
+    for module_name, package_spec in dependency_specs:
+        if pm.is_installed(module_name):
+            continue
+        try:
+            pm.install(package_spec)
+            dep_logger.info(
+                "Installed missing dependency '%s' for Excel processing", package_spec
+            )
+        except Exception as exc:
+            dep_logger.error(
+                "Failed to install dependency '%s' for Excel processing: %s",
+                package_spec,
+                exc,
+            )
+            raise
+
+
+_ensure_excel_dependencies()
+
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, column_index_from_string
 import xlrd

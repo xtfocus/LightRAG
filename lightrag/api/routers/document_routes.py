@@ -1246,51 +1246,82 @@ async def pipeline_enqueue_file(
                         )
                         return False, track_id
 
-                case ".xlsx":
-                    try:
-                        if global_args.document_loading_engine == "DOCLING":
-                            if not pm.is_installed("docling"):  # type: ignore
-                                pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
-
-                            converter = DocumentConverter()
-                            result = converter.convert(file_path)
-                            content = result.document.export_to_markdown()
+                case ".xlsx" | ".xls" | ".xlsb":
+                    processor = get_processor(ext)
+                    if processor:
+                        result = await processor.process_file(
+                            file_path, file, file_size, track_id
+                        )
+                        if result.success:
+                            content = result.content
                         else:
-                            if not pm.is_installed("openpyxl"):  # type: ignore
-                                pm.install("openpyxl")
-                            from openpyxl import load_workbook  # type: ignore
-                            from io import BytesIO
+                            error_label = ext.upper().lstrip(".") or "XLSX"
+                            error_files = [
+                                {
+                                    "file_path": str(file_path.name),
+                                    "error_description": result.error_description
+                                    or f"[File Extraction]{error_label} processing error",
+                                    "original_error": result.original_error
+                                    or "Unknown error",
+                                    "file_size": file_size,
+                                }
+                            ]
+                            await rag.apipeline_enqueue_error_documents(
+                                error_files, track_id
+                            )
+                            logger.error(
+                                f"[File Extraction]{result.error_description or 'Error'} in file: {file_path.name}"
+                            )
+                            return False, track_id
+                    else:
+                        # Fallback to legacy XLSX handling (primarily for docling) if processor not registered
+                        try:
+                            if global_args.document_loading_engine == "DOCLING":
+                                if not pm.is_installed("docling"):  # type: ignore
+                                    pm.install("docling")
+                                from docling.document_converter import (  # type: ignore
+                                    DocumentConverter,
+                                )
 
-                            xlsx_file = BytesIO(file)
-                            wb = load_workbook(xlsx_file)
-                            for sheet in wb:
-                                content += f"Sheet: {sheet.title}\n"
-                                for row in sheet.iter_rows(values_only=True):
-                                    content += (
-                                        "\t".join(
-                                            str(cell) if cell is not None else ""
-                                            for cell in row
+                                converter = DocumentConverter()
+                                result = converter.convert(file_path)
+                                content = result.document.export_to_markdown()
+                            else:
+                                if not pm.is_installed("openpyxl"):  # type: ignore
+                                    pm.install("openpyxl")
+                                from openpyxl import load_workbook  # type: ignore
+                                from io import BytesIO
+
+                                xlsx_file = BytesIO(file)
+                                wb = load_workbook(xlsx_file)
+                                for sheet in wb:
+                                    content += f"Sheet: {sheet.title}\n"
+                                    for row in sheet.iter_rows(values_only=True):
+                                        content += (
+                                            "\t".join(
+                                                str(cell) if cell is not None else ""
+                                                for cell in row
+                                            )
+                                            + "\n"
                                         )
-                                        + "\n"
-                                    )
-                                content += "\n"
-                    except Exception as e:
-                        error_files = [
-                            {
-                                "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]XLSX processing error",
-                                "original_error": f"Failed to extract text from XLSX: {str(e)}",
-                                "file_size": file_size,
-                            }
-                        ]
-                        await rag.apipeline_enqueue_error_documents(
-                            error_files, track_id
-                        )
-                        logger.error(
-                            f"[File Extraction]Error processing XLSX {file_path.name}: {str(e)}"
-                        )
-                        return False, track_id
+                                    content += "\n"
+                        except Exception as e:
+                            error_label = ext.upper().lstrip(".") or "XLSX"
+                            error_files = [
+                                {
+                                    "file_path": str(file_path.name),
+                                    "error_description": f"[File Extraction]{error_label} processing error",
+                                    "original_error": f"Failed to extract text from {error_label}: {str(e)}",
+                                    "file_size": file_size,
+                                }
+                            ]
+                            await rag.apipeline_enqueue_error_documents(
+                                error_files, track_id
+                            )
+                            logger.error(
+                                f"[File Extraction]Error processing {error_label} {file_path.name}: {str(e)}"
+                            )
+                            return False, track_id
 
                 case _:
                     error_files = [
