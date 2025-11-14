@@ -14,7 +14,7 @@ from .processing_pdf import PdfFileProcessor
 # Register all processors
 _processor_instances = [
     TxtFileProcessor(),
-    ExcelFileProcessor()
+    ExcelFileProcessor(),
     PdfFileProcessor(),
 ]
 
