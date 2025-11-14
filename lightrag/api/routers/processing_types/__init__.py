@@ -9,11 +9,13 @@ from .base_processor import BaseFileProcessor, ProcessingResult
 from .processor_registry import ProcessorRegistry, get_processor, register_processor
 from .processing_txt import TxtFileProcessor
 from .processing_excel import ExcelFileProcessor
+from .processing_pdf import PdfFileProcessor
 
 # Register all processors
 _processor_instances = [
     TxtFileProcessor(),
     ExcelFileProcessor()
+    PdfFileProcessor(),
 ]
 
 # Auto-register all processors

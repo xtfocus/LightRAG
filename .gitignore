@@ -49,6 +49,9 @@ inputs/
 output/
 rag_storage/
 data/
+# Notebooks: ignore everything except .py files
+notebooks/*
+!notebooks/*.py
 
 # Evaluation results
 lightrag/evaluation/results/

@@ -121,33 +121,23 @@ async def _azure_openai_complete_inner(
                 model=model, messages=messages, **kwargs
             )
         
-        logger.info("Azure OpenAI API response received")
-        logger.debug("Received response from Azure OpenAI API")
 
         if hasattr(response, "__aiter__"):
             # Streaming response - create a wrapper that collects data
-            logger.info("Azure OpenAI streaming response started")
-            logger.debug("Response is streaming")
             final_chunk_usage = None
             collected_content = []
 
             async def stream_inner():
                 nonlocal final_chunk_usage, collected_content
                 try:
-                    logger.debug("Starting to stream chunks from Azure OpenAI")
                     chunk_count = 0
                     async for chunk in response:
                         chunk_count += 1
                         # Check if this chunk has usage information (final chunk)
                         if hasattr(chunk, "usage") and chunk.usage:
                             final_chunk_usage = chunk.usage
-                            logger.debug(
-                                f"Received usage info in streaming chunk: {chunk.usage}"
-                            )
-
                         # Check if choices exists and is not empty
                         if not hasattr(chunk, "choices") or not chunk.choices:
-                            logger.warning(f"Received chunk without choices: {chunk}")
                             continue
 
                         # Check if delta exists
@@ -166,8 +156,6 @@ async def _azure_openai_complete_inner(
 
                     # Update trace after stream completes
                     # Note: This executes after the generator is exhausted
-                    logger.info(f"Azure OpenAI stream completed. Total chunks: {chunk_count}")
-                    logger.debug(f"Stream completed. Total chunks received: {chunk_count}")
                     if LANGFUSE_ENABLED and get_langfuse_client:
                         try:
                             langfuse = get_langfuse_client()
@@ -215,8 +203,6 @@ async def _azure_openai_complete_inner(
             return stream_inner()
         else:
             # Non-streaming response
-            logger.info("Azure OpenAI non-streaming response received")
-            logger.debug("Response is non-streaming")
             try:
                 # Validate response structure
                 if (
@@ -239,8 +225,6 @@ async def _azure_openai_complete_inner(
                 if r"\u" in content:
                     content = safe_unicode_decode(content.encode("utf-8"))
 
-                logger.info(f"Azure OpenAI response content length: {len(content)} characters")
-                logger.debug(f"Response content len: {len(content)}")
                 verbose_debug(f"Response: {content[:200]}..." if len(content) > 200 else f"Response: {content}")
                 
                 # Log token usage if available
@@ -370,15 +354,8 @@ async def azure_openai_complete_if_cache(
     }
 
     # Add debug logging similar to openai.py
-    logger.info(f"Azure OpenAI LLM call: Model={model}, Deployment={deployment}, API Version={api_version}")
-    logger.debug("===== Entering Azure OpenAI LLM function =====")
-    logger.debug(f"Model: {model}   Deployment: {deployment}")
-    logger.debug(f"Base URL: {base_url}   API Version: {api_version}")
-    logger.debug(f"Additional kwargs: {kwargs}")
-    logger.debug(f"Num of history messages: {len(history_messages) if history_messages else 0}")
     verbose_debug(f"System prompt: {system_prompt}")
     verbose_debug(f"Query: {prompt}")
-    logger.debug("===== Sending Query to Azure OpenAI LLM =====")
 
     # Call the inner function which is decorated with @observe
     # This ensures hashing_kv is not captured by Langfuse (it's removed from kwargs above)
@@ -416,7 +393,6 @@ async def azure_openai_complete(
     return result
 
 
-@observe(name="azure-openai-embed", as_type="embedding")
 @wrap_embedding_func_with_attrs(embedding_dim=1536)
 @retry(
     stop=stop_after_attempt(3),
@@ -453,25 +429,6 @@ async def azure_openai_embed(
         or os.getenv("OPENAI_API_VERSION")
     )
 
-    # Prepare trace metadata
-    trace_metadata = {
-        "model": model,
-        "deployment": deployment,
-        "api_version": api_version,
-        "base_url": base_url,
-        "text_count": len(texts),
-        "total_text_length": sum(len(text) for text in texts),
-    }
-
-    # Add debug logging for embedding function
-    logger.info(f"Azure OpenAI Embedding call: Model={model}, Deployment={deployment}, Text count={len(texts)}")
-    logger.debug("===== Entering Azure OpenAI Embedding function =====")
-    logger.debug(f"Model: {model}   Deployment: {deployment}")
-    logger.debug(f"Base URL: {base_url}   API Version: {api_version}")
-    logger.debug(f"Text count: {len(texts)}   Total text length: {sum(len(text) for text in texts)}")
-    verbose_debug(f"Sample texts: {texts[:3] if len(texts) > 3 else texts}")
-    logger.debug("===== Sending texts to Azure OpenAI Embedding API =====")
-
     openai_async_client = AsyncAzureOpenAI(
         azure_endpoint=base_url,
         azure_deployment=deployment,
@@ -480,12 +437,9 @@ async def azure_openai_embed(
     )
 
     try:
-        logger.debug("Calling Azure OpenAI embeddings.create")
         response = await openai_async_client.embeddings.create(
             model=model, input=texts, encoding_format="float"
         )
-        logger.info("Azure OpenAI Embedding API response received")
-        logger.debug("Received response from Azure OpenAI Embedding API")
 
         # Validate response structure
         if not response or not hasattr(response, "data") or not response.data:
@@ -493,35 +447,6 @@ async def azure_openai_embed(
             raise ValueError("Invalid response from Azure OpenAI Embedding API")
 
         embeddings = np.array([dp.embedding for dp in response.data])
-
-        # Update trace with token usage and metadata
-        if LANGFUSE_ENABLED and get_langfuse_client:
-            try:
-                langfuse = get_langfuse_client()
-                trace_data = {
-                    "input": {
-                        "text_count": len(texts),
-                        "total_text_length": sum(len(text) for text in texts),
-                        "sample_texts": texts[:3] if len(texts) > 3 else texts,  # Include first 3 texts as sample
-                    },
-                    "output": {
-                        "embeddings_shape": list(embeddings.shape),
-                        "embedding_dim": int(embeddings.shape[1]) if len(embeddings.shape) > 1 else 0,
-                    },
-                    "metadata": trace_metadata,
-                }
-
-                # Add token usage if available
-                if hasattr(response, "usage") and response.usage:
-                    trace_data["metadata"]["usage"] = {
-                        "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
-                        "total_tokens": getattr(response.usage, "total_tokens", 0),
-                    }
-
-                langfuse.update_current_trace(**trace_data)
-            except Exception as trace_error:
-                # Don't fail the function if trace update fails
-                logger.warning(f"Failed to update Langfuse trace: {trace_error}")
 
         embedding_dim = int(embeddings.shape[1]) if len(embeddings.shape) > 1 else 0
         logger.info(f"Azure OpenAI embeddings generated: shape={embeddings.shape}, dimension={embedding_dim}")
