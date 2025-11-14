@@ -7,10 +7,12 @@ that require password decryption.
 
 import asyncio
 import base64
+import json
 import os
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
 
 import pipmaster as pm
 from openai import (APIConnectionError, APITimeoutError, AsyncAzureOpenAI,
@@ -33,6 +35,16 @@ if TYPE_CHECKING:
 MIN_IMG_DIMENSION = 100
 INFOGRAPHIC_IMAGE_THRESHOLD = 10
 IMAGE_DESCRIPTION_RUNS = 3
+ENABLE_ORG_CHART_EXTRACTION = (
+    os.getenv("ENABLE_ORG_CHART_EXTRACTION", "true").lower() not in {"0", "false", "no"}
+)
+ORG_CHART_RECT_THRESHOLD = int(os.getenv("ORG_CHART_RECT_THRESHOLD", "8"))
+ORG_CHART_ROOT_AREA_RATIO = float(os.getenv("ORG_CHART_ROOT_AREA_RATIO", "0.6"))
+ORG_CHART_MIN_DEPTH = int(os.getenv("ORG_CHART_MIN_DEPTH", "2"))
+ORG_CHART_MIN_AREA = float(os.getenv("ORG_CHART_MIN_AREA", "500"))
+ORG_CHART_INCLUDE_GEOMETRY = (
+    os.getenv("ORG_CHART_INCLUDE_GEOMETRY", "false").lower() in {"1", "true", "yes"}
+)
 
 
 def get_page_visual_element_count(page: "PageObject") -> int:
@@ -182,6 +194,291 @@ def get_significant_images(page) -> list["ImageFile"]:
             continue
 
     return significant_images
+
+
+# --- Org-chart extraction helpers ------------------------------------------------
+
+
+@dataclass
+class WordBox:
+    text: str
+    x0: float
+    x1: float
+    top: float
+    bottom: float
+
+
+@dataclass
+class RectEntity:
+    rect_id: str
+    page_number: int
+    x0: float
+    x1: float
+    top: float
+    bottom: float
+    words: List[WordBox] = field(default_factory=list)
+    parent_id: Optional[str] = None
+
+    @property
+    def width(self) -> float:
+        return self.x1 - self.x0
+
+    @property
+    def height(self) -> float:
+        return self.bottom - self.top
+
+    @property
+    def area(self) -> float:
+        return max(self.width, 0) * max(self.height, 0)
+
+
+def group_words_into_lines(words: Iterable[WordBox], line_tol: float = 4.0) -> List[str]:
+    sorted_words = sorted(words, key=lambda w: (w.top, w.x0))
+    lines: List[List[WordBox]] = []
+    for word in sorted_words:
+        if not lines:
+            lines.append([word])
+            continue
+        last_line = lines[-1]
+        if abs(word.top - last_line[0].top) <= line_tol:
+            last_line.append(word)
+        else:
+            lines.append([word])
+    return [" ".join(w.text for w in line).strip() for line in lines]
+
+
+def assign_words(rectangles: List[RectEntity], words: List[WordBox], padding: float = 1.5) -> None:
+    for rect in rectangles:
+        for word in words:
+            if (
+                word.x0 >= rect.x0 - padding
+                and word.x1 <= rect.x1 + padding
+                and word.top >= rect.top - padding
+                and word.bottom <= rect.bottom + padding
+            ):
+                rect.words.append(word)
+
+
+def detect_rect_hierarchy(rectangles: List[RectEntity], padding: float = 2.0) -> None:
+    ordered = sorted(rectangles, key=lambda r: r.area, reverse=True)
+    for child in ordered:
+        for parent in ordered:
+            if parent is child or parent.area <= child.area:
+                continue
+            if (
+                child.x0 >= parent.x0 - padding
+                and child.x1 <= parent.x1 + padding
+                and child.top >= parent.top - padding
+                and child.bottom <= parent.bottom + padding
+            ):
+                child.parent_id = parent.rect_id
+                break
+
+
+def serialize_rectangles(rectangles: List[RectEntity]) -> List[Dict[str, Any]]:
+    data: List[Dict[str, Any]] = []
+    for rect in rectangles:
+        lines = group_words_into_lines(rect.words)
+        data.append(
+            {
+                "rect_id": rect.rect_id,
+                "bounds": {"x0": rect.x0, "x1": rect.x1, "top": rect.top, "bottom": rect.bottom},
+                "width": rect.width,
+                "height": rect.height,
+                "area": rect.area,
+                "label": " ".join(line for line in lines if line).strip(),
+                "word_count": len(rect.words),
+                "parent_id": rect.parent_id,
+            }
+        )
+    return data
+
+
+def build_page_hierarchy(rectangles: List[Dict[str, Any]], keep_geometry: bool = False) -> List[Dict[str, Any]]:
+    nodes: Dict[str, Dict[str, Any]] = {}
+    for rect in rectangles:
+        node: Dict[str, Any] = {
+            "rect_id": rect["rect_id"],
+            "text": rect["label"],
+            "word_count": rect["word_count"],
+            "children": [],
+        }
+        if keep_geometry:
+            node["bounds"] = rect["bounds"]
+            node["area"] = rect["area"]
+        nodes[rect["rect_id"]] = node
+
+    roots: List[Dict[str, Any]] = []
+    for rect in rectangles:
+        parent_id = rect.get("parent_id")
+        node = nodes[rect["rect_id"]]
+        if parent_id and parent_id in nodes:
+            nodes[parent_id]["children"].append(node)
+        else:
+            roots.append(node)
+    return roots
+
+
+def _compute_max_depth(rectangles: List[Dict[str, Any]]) -> int:
+    children_map: Dict[str, List[str]] = {}
+    for rect in rectangles:
+        parent = rect.get("parent_id")
+        if parent:
+            children_map.setdefault(parent, []).append(rect["rect_id"])
+
+    def depth(rect_id: str) -> int:
+        if rect_id not in children_map:
+            return 1
+        return 1 + max(depth(child_id) for child_id in children_map[rect_id])
+
+    depths = []
+    for rect in rectangles:
+        if not rect.get("parent_id"):
+            depths.append(depth(rect["rect_id"]))
+    return max(depths) if depths else 0
+
+
+class OrgChartLayoutExtractor:
+    """Extract simplified org-chart layouts using PyMuPDF vector data."""
+
+    def __init__(self, pdf_bytes: bytes) -> None:
+        self.keep_geometry = ORG_CHART_INCLUDE_GEOMETRY
+        self.doc = None
+        self._fitz = None
+        if not ENABLE_ORG_CHART_EXTRACTION:
+            return
+        try:
+            if not pm.is_installed("pymupdf"):  # type: ignore
+                pm.install("pymupdf")
+            import fitz  # type: ignore
+
+            self._fitz = fitz
+            self.doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        except Exception as exc:
+            logger.warning(f"[File Extraction]Failed to initialize PyMuPDF for org-chart extraction: {exc}")
+            self.doc = None
+
+    def close(self) -> None:
+        if self.doc:
+            try:
+                self.doc.close()
+            except Exception:
+                pass
+            self.doc = None
+
+    def _extract_words(self, page: "fitz.Page") -> List[WordBox]:
+        words: List[WordBox] = []
+        try:
+            for entry in page.get_text("words"):
+                if len(entry) < 5:
+                    continue
+                x0, y0, x1, y1, text, *_ = entry
+                if not text.strip():
+                    continue
+                words.append(WordBox(text=text, x0=float(x0), x1=float(x1), top=float(y0), bottom=float(y1)))
+        except Exception as exc:
+            logger.debug(f"[File Extraction]Failed to extract words for org-chart detection: {exc}")
+        return words
+
+    def _load_rectangles(self, page: "fitz.Page", page_number: int) -> List[RectEntity]:
+        rectangles: List[RectEntity] = []
+        seen: set[Tuple[int, int, int, int]] = set()
+
+        def register(rect_obj: Any) -> None:
+            if not rect_obj:
+                return
+            bbox = (float(rect_obj.x0), float(rect_obj.y0), float(rect_obj.x1), float(rect_obj.y1))
+            width = bbox[2] - bbox[0]
+            height = bbox[3] - bbox[1]
+            area = width * height
+            if area < ORG_CHART_MIN_AREA or width <= 0 or height <= 0:
+                return
+            rounded = tuple(int(round(coord)) for coord in bbox)
+            if rounded in seen:
+                return
+            seen.add(rounded)
+            rect_id = f"p{page_number}_rect{len(rectangles) + 1}"
+            rectangles.append(
+                RectEntity(
+                    rect_id=rect_id,
+                    page_number=page_number,
+                    x0=bbox[0],
+                    x1=bbox[2],
+                    top=bbox[1],
+                    bottom=bbox[3],
+                )
+            )
+
+        try:
+            drawings = page.get_drawings()
+        except Exception as exc:
+            logger.debug(f"[File Extraction]Failed to read drawings for org-chart detection: {exc}")
+            return rectangles
+
+        for drawing in drawings:
+            direct_rect = False
+            for item in drawing.get("items", []):
+                op = item[0]
+                geom = item[1] if len(item) > 1 else None
+                if op == "re" and self._fitz and isinstance(geom, self._fitz.Rect):
+                    register(geom)
+                    direct_rect = True
+            if direct_rect:
+                continue
+
+            points: List[Tuple[float, float]] = []
+            for item in drawing.get("items", []):
+                for maybe_point in item[1:]:
+                    if self._fitz and isinstance(maybe_point, self._fitz.Point):
+                        points.append((maybe_point.x, maybe_point.y))
+            if len(points) < 4:
+                continue
+            xs = [pt[0] for pt in points]
+            ys = [pt[1] for pt in points]
+            register(self._fitz.Rect(min(xs), min(ys), max(xs), max(ys)) if self._fitz else None)
+
+        return rectangles
+
+    def extract_page_layout(self, page_number: int) -> Optional[str]:
+        if not self.doc:
+            return None
+        try:
+            page = self.doc[page_number - 1]
+        except Exception:
+            return None
+
+        rectangles = self._load_rectangles(page, page_number)
+        if len(rectangles) < ORG_CHART_RECT_THRESHOLD:
+            return None
+
+        words = self._extract_words(page)
+        assign_words(rectangles, words)
+        detect_rect_hierarchy(rectangles)
+
+        serialized = serialize_rectangles(rectangles)
+        page_rect = page.rect if hasattr(page, "rect") else None
+        page_area = (page_rect.width * page_rect.height) if page_rect else None
+
+        has_large_root = False
+        if page_area:
+            for rect in serialized:
+                if not rect.get("parent_id") and rect["area"] / page_area >= ORG_CHART_ROOT_AREA_RATIO:
+                    has_large_root = True
+                    break
+
+        max_depth = _compute_max_depth(serialized)
+        if not has_large_root and max_depth < ORG_CHART_MIN_DEPTH:
+            return None
+
+        simplified = {
+            "page_number": page_number,
+            "trees": build_page_hierarchy(serialized, keep_geometry=self.keep_geometry),
+        }
+
+        if not simplified["trees"]:
+            return None
+
+        return json.dumps(simplified, ensure_ascii=False)
 
 
 def image_to_base64(pil_image) -> str:
@@ -700,6 +997,9 @@ class PdfFileProcessor(BaseFileProcessor):
 
                 # Extract text and images from PDF (encrypted PDFs are now decrypted, unencrypted PDFs proceed directly)
                 infographic_pages: list[int] = []
+                org_chart_extractor: Optional[OrgChartLayoutExtractor] = (
+                    OrgChartLayoutExtractor(file_bytes) if ENABLE_ORG_CHART_EXTRACTION else None
+                )
 
                 for page_num, page in enumerate(reader.pages, 1):
                     infographic_page = is_infographic_page(page)
@@ -742,13 +1042,27 @@ class PdfFileProcessor(BaseFileProcessor):
                         )
                         image_descriptions = ""
 
-                    # Combine page text and image descriptions
-                    content += page_text + "\n" + image_descriptions
+                    extra_layout = ""
+                    if org_chart_extractor and not infographic_page:
+                        try:
+                            layout_json = org_chart_extractor.extract_page_layout(page_num)
+                            if layout_json:
+                                extra_layout = f"[OrgChartLayoutJSON]\n{layout_json}\n"
+                        except Exception as exc:
+                            logger.debug(
+                                f"[File Extraction]Org-chart extraction failed on page {page_num}: {exc}"
+                            )
+
+                    # Combine page text, image descriptions, and layout info
+                    content += page_text + "\n" + image_descriptions + extra_layout
 
                 if infographic_pages:
                     logger.info(
                         f"[File Extraction]Infographic pages detected for {file_path.name}: {infographic_pages}"
                     )
+
+                if org_chart_extractor:
+                    org_chart_extractor.close()
 
             # Validate content
             if not content or len(content.strip()) == 0:

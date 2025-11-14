@@ -15,7 +15,10 @@ Enhance the PDF processor to extract and describe images from PDF pages using Az
    - Judge description quality and image relevance
    - Filter out trivial images (icons, simple shapes, lines)
 5. **Combine per page:** `page_text + "\n" + image_descriptions + "\n"`
-6. **Combine all pages:** Join all page contents into final `content`
+6. **Detect org-chart pages:** Inspect vector rectangles (PyMuPDF) for hierarchical layouts
+7. **If detected:** Produce simplified layout JSON for the page
+8. **Combine per page:** Append org-chart JSON (if any) to the textual content block
+9. **Combine all pages:** Join all page contents into final `content`
 
 ### End-to-End Flow (Mermaid)
 
@@ -37,7 +40,10 @@ flowchart TD
     H -->|No| K
     K --> L["page_text = page.extract_text() or ''"]
     L --> M["image_descriptions = process_page_images(page, n)"]
-    M --> N["append page_text + '\n' + image_descriptions"]
+    M --> O{"is_org_chart_page(page)?"}
+    O -->|Yes| P["extract_org_chart_layout()<br/>attach layout JSON"]
+    P --> N["append page_text + '\\n' + image_descriptions + '\\n' + layout_json"]
+    O -->|No| N["append page_text + '\\n' + image_descriptions"]
     N --> G
     Z -->|False/Empty| ERR["ProcessingResult failure:<br/>'[File Extraction]Empty file content'"]
     Z -->|True| OK["ProcessingResult success<br/>content"]```
@@ -186,8 +192,38 @@ for page in reader.pages:
 for page_num, page in enumerate(reader.pages, 1):
     page_text = page.extract_text()
     image_descriptions = await process_page_images(page, page_num)
-    content += page_text + "\n" + image_descriptions + "\n"
+    org_chart_layout_json = detect_and_extract_org_chart(page, page_num)
+    extra = f"\n[OrgChartLayoutJSON]\n{org_chart_layout_json}" if org_chart_layout_json else ""
+    content += page_text + "\n" + image_descriptions + extra + "\n"
 ```
+
+### 7. Org-Chart Page Detection & Layout JSON
+
+- **Detection heuristic**
+  - Use PyMuPDF (`pymupdf`) to collect rectangles and vector paths per page.
+  - Candidate criteria (configurable):
+    - At least `ORG_CHART_RECT_THRESHOLD` rectangles (default 8) with area above `ORG_CHART_MIN_AREA`.
+    - Presence of a container rectangle covering > `ORG_CHART_ROOT_AREA_RATIO` (default 0.6) of the page OR nested rectangles reaching `ORG_CHART_MIN_DEPTH`.
+  - Skip if page already marked as general infographic to avoid double work.
+- **Extraction**
+  - Invoke shared helper (derived from `notebooks/org_chart.py`) with PyMuPDF backend to:
+    1. Detect rectangles & assign text.
+    2. Build parent/child tree.
+    3. Produce simplified JSON: `{ "page_number": n, "trees": [...] }`.
+  - Optionally include geometry metadata when `ORG_CHART_INCLUDE_GEOMETRY` is enabled.
+- **Attachment**
+  - Store JSON string in page metadata (e.g., `page_analysis.org_chart_layout_json`) and append a tagged text block:
+    ```
+    [OrgChartLayoutJSON]
+    {"page":3,"trees":[...]}
+    ```
+  - Downstream LLM prompt builders include this snippet when present.
+- **Configuration**
+  - Feature flag `ENABLE_ORG_CHART_EXTRACTION` (default True).
+  - Thresholds: `ORG_CHART_RECT_THRESHOLD`, `ORG_CHART_ROOT_AREA_RATIO`, `ORG_CHART_MIN_DEPTH`, `ORG_CHART_MIN_AREA`.
+- **Error handling**
+  - On extraction failure, log warning and continue; never block page processing.
+  - If JSON exceeds size limit (e.g., 4 KB), truncate or summarize before attachment.
 
 ## Error Handling Strategy
 
@@ -242,6 +278,7 @@ async def describe_image(...):
 ### Required Packages
 - `pypdf` (already used)
 - `Pillow` (PIL) - for image handling
+- `pymupdf` - for rectangle detection & layout parsing
 - `tenacity` - for retry logic
 - `asyncio` - for concurrent processing
 - `base64` - for encoding
@@ -261,6 +298,7 @@ async def describe_image(...):
 6. API failures (test retry logic)
 7. Rate limiting (test exponential backoff)
 8. Large images (test memory handling)
+9. PDF with hierarchical org-chart diagrams (validate detection + JSON output)
 
 ## Performance Considerations
 
@@ -282,6 +320,9 @@ Image 2 page 1: [Description of second image on page 1]
 
 Image 1 page 2: [Description of first image on page 2]
 
+[OrgChartLayoutJSON]
+{"page":2,"trees":[...]}
+
 ...
 ```
 
@@ -297,8 +338,10 @@ Image 1 page 2: [Description of first image on page 2]
 3. Implement image judgment with retry
 4. Implement concurrent processing per page
 5. Integrate with existing PDF processing flow
-6. Add error handling and logging
-7. Test with various PDF types
+6. Add org-chart detection + layout extraction
+7. Attach org-chart JSON to page content and metadata
+8. Add error handling and logging
+9. Test with various PDF types (including org charts)
 
 ## Notes
 
