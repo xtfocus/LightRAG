@@ -338,7 +338,7 @@ class ExcelFileProcessor(BaseFileProcessor):
         candidate_rows = []
         for i in range(1, first_pct + 1):
             row_values = [
-                str(cell.value).replace("\n", "<br>") if cell.value is not None else "" for cell in sheet[i]]
+                self.process_cell_value(cell.value) if cell.value is not None else "" for cell in sheet[i]]
             candidate_rows.append(row_values)
 
         # Find header row: most non-empty cells
@@ -361,7 +361,7 @@ class ExcelFileProcessor(BaseFileProcessor):
 
         # Read rest of the sheet
         for i in range(header_idx + 2, n_rows + 1):  # +2 because openpyxl is 1-indexed
-            row = [str(cell.value) if cell.value is not None else "" for cell in sheet[i]]
+            row = [self.process_cell_value(cell.value) if cell.value is not None else "" for cell in sheet[i]]
             markdown_lines.append("| " + " | ".join(row) + " |")
 
         sheet_content = "\n".join(markdown_lines)
@@ -657,8 +657,8 @@ class ExcelFileProcessor(BaseFileProcessor):
         for i in range(first_pct):
             row_values = (
                 [
-                    self.process_cell_value(row[j].v) if j < len(
-                        row) and row[j].v is not None else ""
+                    self.process_cell_value(rows[i][j].v) if j < len(
+                        rows[i]) and rows[i][j].v is not None else ""
                     for j in range(n_cols)
                 ]
                 if i < len(rows)
