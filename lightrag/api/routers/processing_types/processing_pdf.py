@@ -342,6 +342,7 @@ class OrgChartLayoutExtractor:
     """Extract simplified org-chart layouts using PyMuPDF vector data."""
 
     def __init__(self, pdf_bytes: bytes) -> None:
+        """Initialize extractor (lazy-loads pymupdf)."""
         self.keep_geometry = ORG_CHART_INCLUDE_GEOMETRY
         self.doc = None
         self._fitz = None
@@ -440,6 +441,7 @@ class OrgChartLayoutExtractor:
         return rectangles
 
     def extract_page_layout(self, page_number: int) -> Optional[str]:
+        """Return layout JSON for a page if it looks like an org chart."""
         if not self.doc:
             return None
         try:
@@ -449,6 +451,10 @@ class OrgChartLayoutExtractor:
 
         rectangles = self._load_rectangles(page, page_number)
         if len(rectangles) < ORG_CHART_RECT_THRESHOLD:
+            logger.debug(
+                f"[File Extraction]Org-chart detection skipped on page {page_number}: "
+                f"{len(rectangles)} rectangles < threshold {ORG_CHART_RECT_THRESHOLD}"
+            )
             return None
 
         words = self._extract_words(page)
@@ -468,6 +474,10 @@ class OrgChartLayoutExtractor:
 
         max_depth = _compute_max_depth(serialized)
         if not has_large_root and max_depth < ORG_CHART_MIN_DEPTH:
+            logger.debug(
+                f"[File Extraction]Org-chart detection skipped on page {page_number}: "
+                f"max_depth={max_depth}, has_large_root={has_large_root}"
+            )
             return None
 
         simplified = {
@@ -476,8 +486,15 @@ class OrgChartLayoutExtractor:
         }
 
         if not simplified["trees"]:
+            logger.debug(
+                f"[File Extraction]Org-chart detection skipped on page {page_number}: no hierarchy built."
+            )
             return None
 
+        logger.info(
+            f"[File Extraction]Org-chart layout extracted for page {page_number} "
+            f"(rectangles={len(serialized)}, depth={max_depth}, large_root={has_large_root})."
+        )
         return json.dumps(simplified, ensure_ascii=False)
 
 
