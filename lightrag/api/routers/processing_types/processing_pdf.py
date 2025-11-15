@@ -347,6 +347,7 @@ class OrgChartLayoutExtractor:
         self.doc = None
         self._fitz = None
         if not ENABLE_ORG_CHART_EXTRACTION:
+            logger.info("[File Extraction]Org-chart extraction disabled via configuration.")
             return
         try:
             if not pm.is_installed("pymupdf"):  # type: ignore
@@ -358,6 +359,9 @@ class OrgChartLayoutExtractor:
         except Exception as exc:
             logger.warning(f"[File Extraction]Failed to initialize PyMuPDF for org-chart extraction: {exc}")
             self.doc = None
+            logger.info(
+                "[File Extraction]Org-chart extraction unavailable: failed to load PyMuPDF."
+            )
 
     def close(self) -> None:
         if self.doc:
@@ -443,6 +447,9 @@ class OrgChartLayoutExtractor:
     def extract_page_layout(self, page_number: int) -> Optional[str]:
         """Return layout JSON for a page if it looks like an org chart."""
         if not self.doc:
+            logger.info(
+                f"[File Extraction]Org-chart extraction skipped for page {page_number}: document handle unavailable."
+            )
             return None
         try:
             page = self.doc[page_number - 1]
@@ -451,7 +458,7 @@ class OrgChartLayoutExtractor:
 
         rectangles = self._load_rectangles(page, page_number)
         if len(rectangles) < ORG_CHART_RECT_THRESHOLD:
-            logger.debug(
+            logger.info(
                 f"[File Extraction]Org-chart detection skipped on page {page_number}: "
                 f"{len(rectangles)} rectangles < threshold {ORG_CHART_RECT_THRESHOLD}"
             )
@@ -474,7 +481,7 @@ class OrgChartLayoutExtractor:
 
         max_depth = _compute_max_depth(serialized)
         if not has_large_root and max_depth < ORG_CHART_MIN_DEPTH:
-            logger.debug(
+            logger.info(
                 f"[File Extraction]Org-chart detection skipped on page {page_number}: "
                 f"max_depth={max_depth}, has_large_root={has_large_root}"
             )
@@ -486,7 +493,7 @@ class OrgChartLayoutExtractor:
         }
 
         if not simplified["trees"]:
-            logger.debug(
+            logger.info(
                 f"[File Extraction]Org-chart detection skipped on page {page_number}: no hierarchy built."
             )
             return None
