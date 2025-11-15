@@ -1089,6 +1089,8 @@ class PdfFileProcessor(BaseFileProcessor):
                             if layout_description:
                                 org_chart_layout_block = (
                                     "[OrgChartLayout]\n"
+                                    "The following tree lists each box and its nested boxes "
+                                    "from the Organization Chart Layout Analysis:\n"
                                     f"{layout_description}\n"
                                 )
                         except Exception as exc:
