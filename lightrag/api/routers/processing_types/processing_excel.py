@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import logging
 from logging import getLogger
+import re
 import time
 from typing import Tuple
 
@@ -49,7 +50,7 @@ def _ensure_excel_dependencies() -> None:
 
 
 _ensure_excel_dependencies()
-
+import dotenv
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, column_index_from_string
 import xlrd
@@ -65,8 +66,8 @@ logger = getLogger(__name__)
 root = Path(__file__).resolve().parent
 env_path = root / ".env"
 dotenv.load_dotenv(env_path)
-LLM_API_BASE = os.getenv("AZURE_OPENAI_ENDPOINT")
-LLM_API_TOKEN = os.getenv("AZURE_OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 
 def timer(logger=None):
     """
@@ -108,20 +109,20 @@ def async_timer(func):
 
 
 class LLMClient:
-    def __init__(self, api_base: str, token: str, model: str = "gpt-4.1"):
-        self.token = token
-        self.api_base = api_base
-        self.model = model
+    def __init__(self, endpoint: str, api_key: str, deployment_id: str = "gpt-4.1", api_version: str = "2025-01-01-preview"):
+        self.endpoint = endpoint
+        self.deployment_id = deployment_id
+        self.api_key = api_key
+        self.api_version = api_version
 
     @async_timer
     async def detect_block(self, cells_data):
         prompt = self._build_prompt(cells_data)
         headers = {
-            "Authorization": f"Bearer {self.token}",
+            "api-key": self.api_key,
             "Content-Type": "application/json",
         }
         payload = {
-            "model": self.model,
             "messages": [
                 {
                     "role": "system",
@@ -132,10 +133,11 @@ class LLMClient:
             "temperature": 0.1,
             "max_tokens": 5000,
         }
-        # For async requests, use httpx or aiohttp, but here is sync example:
-        response = requests.post(
-            f"{self.api_base}/v1/chat/completions", headers=headers, json=payload
+        endpoint = (
+            f"{self.endpoint}/openai/deployments/"
+            f"{self.deployment_id}/chat/completions?api-version={self.api_version}"
         )
+        response = requests.post(endpoint, headers=headers, json=payload)
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         block_info = self._parse_blocks(content)
@@ -161,7 +163,7 @@ class LLMClient:
 
 
 class ExcelFileProcessor(BaseFileProcessor):
-    """Processor for plain text (.txt) files.
+    """Processor for excel text (.xlsx | .xls | .xlsb) files.
 
     This processor handles UTF-8 encoded text files. It validates the content
     and ensures it's not empty or binary data.
@@ -170,7 +172,7 @@ class ExcelFileProcessor(BaseFileProcessor):
     def __init__(self):
         super().__init__()
         self.llm_client = LLMClient(
-            api_base=LLM_API_BASE, token=LLM_API_TOKEN
+            endpoint=AZURE_OPENAI_ENDPOINT, api_key=AZURE_OPENAI_API_KEY
         )
 
     @property
@@ -194,7 +196,7 @@ class ExcelFileProcessor(BaseFileProcessor):
         file_size: int,
         track_id: str,
     ) -> ProcessingResult:
-        """Process a .txt file and extract its text content.
+        """Process a excel file and extract its text content.
 
         This method:
         1. Decodes the file bytes as UTF-8
@@ -257,12 +259,12 @@ class ExcelFileProcessor(BaseFileProcessor):
         except Exception as e:
             # Handle any other unexpected errors
             logger.error(
-                f"[File Extraction]Unexpected error processing TXT file {file_path.name}: {str(e)}"
+                f"[File Extraction]Unexpected error processing excel file {file_path.name}: {str(e)}"
             )
             return ProcessingResult(
                 success=False,
                 content="",
-                error_description="[File Extraction]TXT file processing error",
+                error_description="[File Extraction] Excel file processing error",
                 original_error=f"Unexpected error: {str(e)}",
             )
 
@@ -336,7 +338,7 @@ class ExcelFileProcessor(BaseFileProcessor):
         candidate_rows = []
         for i in range(1, first_pct + 1):
             row_values = [
-                str(cell.value).replace("\n", "<br>") if cell.value is not None else "" for cell in sheet[i]]
+                self.process_cell_value(cell.value) if cell.value is not None else "" for cell in sheet[i]]
             candidate_rows.append(row_values)
 
         # Find header row: most non-empty cells
@@ -359,7 +361,7 @@ class ExcelFileProcessor(BaseFileProcessor):
 
         # Read rest of the sheet
         for i in range(header_idx + 2, n_rows + 1):  # +2 because openpyxl is 1-indexed
-            row = [str(cell.value) if cell.value is not None else "" for cell in sheet[i]]
+            row = [self.process_cell_value(cell.value) if cell.value is not None else "" for cell in sheet[i]]
             markdown_lines.append("| " + " | ".join(row) + " |")
 
         sheet_content = "\n".join(markdown_lines)
@@ -369,10 +371,14 @@ class ExcelFileProcessor(BaseFileProcessor):
     def process_cell_value(value: str):
         value = str(value).strip()
         value_list = value.split("\n")
-        value_list = [line.replace("-", "\t", 1) if line.lstrip().startswith(
-            "-") else line for line in value_list]
-        value = "<br>".join(value_list)
-
+        processed_list = []
+        for line in value_list:
+            line = line.strip()
+            line = line.replace("-", "  ", 1) if line.startswith("-") else line
+            line = line.replace("\t", "  ")
+            line = re.sub(r'([\\|*_~`$])', r'\\\1', line)
+            processed_list.append(line)
+        value = "<br>".join(processed_list)
         return value
 
     @async_timer
@@ -518,7 +524,7 @@ class ExcelFileProcessor(BaseFileProcessor):
         for i in range(header_idx + 1, n_rows):
             row = [
                 (
-                    str(sheet.cell_value(i, j))
+                    self.process_cell_value(sheet.cell_value(i, j))
                     if sheet.cell_value(i, j) not in [None, ""]
                     else ""
                 )
@@ -651,8 +657,8 @@ class ExcelFileProcessor(BaseFileProcessor):
         for i in range(first_pct):
             row_values = (
                 [
-                    str(row[j].v).replace("\n", "<br>") if j < len(
-                        row) and row[j].v is not None else ""
+                    self.process_cell_value(rows[i][j].v) if j < len(
+                        rows[i]) and rows[i][j].v is not None else ""
                     for j in range(n_cols)
                 ]
                 if i < len(rows)
