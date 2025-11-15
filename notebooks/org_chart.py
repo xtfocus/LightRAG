@@ -474,6 +474,40 @@ def simplify_org_chart_result(
     }
 
 
+def _node_title(node: Dict[str, Any]) -> str:
+    text = (node.get("text") or "").strip()
+    return text if text else "Unnamed box"
+
+
+def _describe_node(node: Dict[str, Any], depth: int = 0) -> List[str]:
+    indent = "  " * depth
+    title = _node_title(node)
+    children = node.get("children") or []
+    if children:
+        child_titles = ", ".join(_node_title(child) for child in children)
+        line = f"{indent}- Box '{title}' contains {len(children)} child box(es): {child_titles}."
+    else:
+        line = f"{indent}- Box '{title}' has no nested boxes."
+    lines = [line]
+    for child in children:
+        lines.extend(_describe_node(child, depth + 1))
+    return lines
+
+
+def describe_simplified_page(page_layout: Dict[str, Any]) -> str:
+    page_number = page_layout.get("page_number")
+    lines = [f"Org chart layout for page {page_number}:"]
+    trees = page_layout.get("trees") or []
+    if not trees:
+        lines.append("No box hierarchy detected.")
+        return "\n".join(lines)
+    for idx, tree in enumerate(trees, 1):
+        root_title = _node_title(tree)
+        lines.append(f"Root box {idx}: '{root_title}'.")
+        lines.extend(_describe_node(tree, depth=1))
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -535,4 +569,6 @@ if __name__ == "__main__":
         )
         saved_path = save_results(simplified, args.simplify_json)
         print(f"Saved simplified hierarchy to {saved_path}")
+        for page in simplified["pages"]:
+            print(describe_simplified_page(page))
 

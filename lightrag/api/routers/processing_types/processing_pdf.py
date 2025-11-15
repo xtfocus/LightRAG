@@ -209,6 +209,12 @@ class WordBox:
 
 
 @dataclass
+class OrgChartLayoutResult:
+    json: str
+    description: str
+
+
+@dataclass
 class RectEntity:
     rect_id: str
     page_number: int
@@ -320,6 +326,47 @@ def build_page_hierarchy(rectangles: List[Dict[str, Any]], keep_geometry: bool =
             node.pop("children", None)
 
     return roots
+
+
+def _node_title(node: Dict[str, Any]) -> str:
+    text = (node.get("text") or "").strip()
+    if text:
+        return text
+    return "Unnamed box"
+
+
+def _describe_node(node: Dict[str, Any], depth: int = 0) -> List[str]:
+    indent = "  " * depth
+    title = _node_title(node)
+    children = node.get("children") or []
+
+    if children:
+        child_titles = ", ".join(_node_title(child) for child in children)
+        line = f"{indent}- Box '{title}' contains {len(children)} child box(es): {child_titles}."
+    else:
+        line = f"{indent}- Box '{title}' has no nested boxes."
+
+    lines = [line]
+    for child in children:
+        lines.extend(_describe_node(child, depth + 1))
+    return lines
+
+
+def describe_simplified_layout(layout: Dict[str, Any]) -> str:
+    page_number = layout.get("page_number")
+    lines = [f"Org chart layout for page {page_number}:"]
+
+    trees = layout.get("trees") or []
+    if not trees:
+        lines.append("No box hierarchy detected.")
+        return "\n".join(lines)
+
+    for idx, tree in enumerate(trees, 1):
+        root_title = _node_title(tree)
+        lines.append(f"Root box {idx}: '{root_title}'.")
+        lines.extend(_describe_node(tree, depth=1))
+
+    return "\n".join(lines)
 
 
 def _compute_max_depth(rectangles: List[Dict[str, Any]]) -> int:
@@ -447,7 +494,7 @@ class OrgChartLayoutExtractor:
 
         return rectangles
 
-    def extract_page_layout(self, page_number: int) -> Optional[str]:
+    def extract_page_layout(self, page_number: int) -> Optional[OrgChartLayoutResult]:
         """Return layout JSON for a page if it looks like an org chart."""
         if not self.doc:
             logger.info(
@@ -501,11 +548,13 @@ class OrgChartLayoutExtractor:
             )
             return None
 
+        description = describe_simplified_layout(simplified)
+        json_payload = json.dumps(simplified, ensure_ascii=False)
         logger.info(
             f"[File Extraction]Org-chart layout extracted for page {page_number} "
             f"(rectangles={len(serialized)}, depth={max_depth}, large_root={has_large_root})."
         )
-        return json.dumps(simplified, ensure_ascii=False)
+        return OrgChartLayoutResult(json=json_payload, description=description)
 
 
 def image_to_base64(pil_image) -> str:
@@ -1033,9 +1082,14 @@ class PdfFileProcessor(BaseFileProcessor):
                     org_chart_layout_block = ""
                     if infographic_page and org_chart_extractor:
                         try:
-                            layout_json = org_chart_extractor.extract_page_layout(page_num)
-                            if layout_json:
-                                org_chart_layout_block = f"[OrgChartLayoutJSON]\n{layout_json}\n"
+                            layout_result = org_chart_extractor.extract_page_layout(page_num)
+                            if layout_result:
+                                org_chart_layout_block = (
+                                    "[OrgChartLayout]\n"
+                                    f"{layout_result.description}\n"
+                                    "[OrgChartLayoutJSON]\n"
+                                    f"{layout_result.json}\n"
+                                )
                         except Exception as exc:
                             logger.debug(
                                 f"[File Extraction]Org-chart extraction failed on page {page_num}: {exc}"
