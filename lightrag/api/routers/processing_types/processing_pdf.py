@@ -209,12 +209,6 @@ class WordBox:
 
 
 @dataclass
-class OrgChartLayoutResult:
-    json: str
-    description: str
-
-
-@dataclass
 class RectEntity:
     rect_id: str
     page_number: int
@@ -499,7 +493,7 @@ class OrgChartLayoutExtractor:
 
         return rectangles
 
-    def extract_page_layout(self, page_number: int) -> Optional[OrgChartLayoutResult]:
+    def extract_page_layout(self, page_number: int) -> Optional[str]:
         """Return layout JSON for a page if it looks like an org chart."""
         if not self.doc:
             logger.info(
@@ -554,12 +548,16 @@ class OrgChartLayoutExtractor:
             return None
 
         description = describe_simplified_layout(simplified)
-        json_payload = json.dumps(simplified, ensure_ascii=False)
+        logger.info(
+            "[File Extraction]Org-chart layout (page %s):\n%s",
+            page_number,
+            description,
+        )
         logger.info(
             f"[File Extraction]Org-chart layout extracted for page {page_number} "
             f"(rectangles={len(serialized)}, depth={max_depth}, large_root={has_large_root})."
         )
-        return OrgChartLayoutResult(json=json_payload, description=description)
+        return description
 
 
 def image_to_base64(pil_image) -> str:
@@ -1087,13 +1085,11 @@ class PdfFileProcessor(BaseFileProcessor):
                     org_chart_layout_block = ""
                     if infographic_page and org_chart_extractor:
                         try:
-                            layout_result = org_chart_extractor.extract_page_layout(page_num)
-                            if layout_result:
+                            layout_description = org_chart_extractor.extract_page_layout(page_num)
+                            if layout_description:
                                 org_chart_layout_block = (
                                     "[OrgChartLayout]\n"
-                                    f"{layout_result.description}\n"
-                                    "[OrgChartLayoutJSON]\n"
-                                    f"{layout_result.json}\n"
+                                    f"{layout_description}\n"
                                 )
                         except Exception as exc:
                             logger.debug(

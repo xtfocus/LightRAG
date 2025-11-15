@@ -16,8 +16,8 @@ Enhance the PDF processor to extract and describe images from PDF pages using Az
    - Filter out trivial images (icons, simple shapes, lines)
 5. **Combine per page:** `page_text + "\n" + image_descriptions + "\n"`
 6. **Detect org-chart pages:** Inspect vector rectangles (PyMuPDF) for hierarchical layouts
-7. **If detected:** Produce simplified layout JSON for the page
-8. **Combine per page:** Append org-chart JSON (if any) to the textual content block
+7. **If detected:** Produce an ASCII tree summary for the page
+8. **Combine per page:** Append the tree description (if any) to the textual content block
 9. **Combine all pages:** Join all page contents into final `content`
 
 ### End-to-End Flow (Mermaid)
@@ -41,8 +41,8 @@ flowchart TD
     K --> L["page_text = page.extract_text() or ''"]
     L --> M["image_descriptions = process_page_images(page, n)"]
     M --> O{"is_org_chart_page(page)?"}
-    O -->|Yes| P["extract_org_chart_layout()<br/>attach layout JSON"]
-    P --> N["append page_text + '\\n' + image_descriptions + '\\n' + layout_json"]
+    O -->|Yes| P["extract_org_chart_layout()<br/>attach ASCII tree"]
+    P --> N["append page_text + '\\n' + image_descriptions + '\\n' + layout_text"]
     O -->|No| N["append page_text + '\\n' + image_descriptions"]
     N --> G
     Z -->|False/Empty| ERR["ProcessingResult failure:<br/>'[File Extraction]Empty file content'"]
@@ -192,8 +192,8 @@ for page in reader.pages:
 for page_num, page in enumerate(reader.pages, 1):
     page_text = page.extract_text()
     image_descriptions = await process_page_images(page, page_num)
-    org_chart_layout_json = detect_and_extract_org_chart(page, page_num)
-    extra = f"\n[OrgChartLayoutJSON]\n{org_chart_layout_json}" if org_chart_layout_json else ""
+    org_chart_layout_text = detect_and_extract_org_chart(page, page_num)
+    extra = f"\n[OrgChartLayout]\n{org_chart_layout_text}\n" if org_chart_layout_text else ""
     content += page_text + "\n" + image_descriptions + extra + "\n"
 ```
 
@@ -212,12 +212,15 @@ for page_num, page in enumerate(reader.pages, 1):
     3. Produce simplified JSON: `{ "page_number": n, "trees": [...] }`.
   - Optionally include geometry metadata when `ORG_CHART_INCLUDE_GEOMETRY` is enabled.
 - **Attachment**
-  - Store JSON string in page metadata (e.g., `page_analysis.org_chart_layout_json`) and append a tagged text block:
+  - Append a tagged ASCII tree block to the page content:
     ```
-    [OrgChartLayoutJSON]
-    {"page":3,"trees":[...]}
+    [OrgChartLayout]
+    Org chart layout for page 3:
+    Root 1: Headquarters
+    ├─ Finance
+    └─ Operations
     ```
-  - Downstream LLM prompt builders include this snippet when present.
+  - Optionally store the text in metadata for downstream prompt builders.
 - **Configuration**
   - Feature flag `ENABLE_ORG_CHART_EXTRACTION` (default True).
   - Thresholds: `ORG_CHART_RECT_THRESHOLD`, `ORG_CHART_ROOT_AREA_RATIO`, `ORG_CHART_MIN_DEPTH`, `ORG_CHART_MIN_AREA`.
@@ -298,7 +301,7 @@ async def describe_image(...):
 6. API failures (test retry logic)
 7. Rate limiting (test exponential backoff)
 8. Large images (test memory handling)
-9. PDF with hierarchical org-chart diagrams (validate detection + JSON output)
+9. PDF with hierarchical org-chart diagrams (validate detection + ASCII output)
 
 ## Performance Considerations
 
@@ -320,8 +323,11 @@ Image 2 page 1: [Description of second image on page 1]
 
 Image 1 page 2: [Description of first image on page 2]
 
-[OrgChartLayoutJSON]
-{"page":2,"trees":[...]}
+[OrgChartLayout]
+Org chart layout for page 2:
+Root 1: Headquarters
+├─ Finance
+└─ Operations
 
 ...
 ```
@@ -339,7 +345,7 @@ Image 1 page 2: [Description of first image on page 2]
 4. Implement concurrent processing per page
 5. Integrate with existing PDF processing flow
 6. Add org-chart detection + layout extraction
-7. Attach org-chart JSON to page content and metadata
+7. Attach org-chart ASCII tree to page content and metadata
 8. Add error handling and logging
 9. Test with various PDF types (including org charts)
 
