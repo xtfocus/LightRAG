@@ -237,6 +237,14 @@ class RectEntity:
     def area(self) -> float:
         return max(self.width, 0) * max(self.height, 0)
 
+    def contains_word(self, word: WordBox, padding: float = 1.5) -> bool:
+        return (
+            word.x0 >= self.x0 - padding
+            and word.x1 <= self.x1 + padding
+            and word.top >= self.top - padding
+            and word.bottom <= self.bottom + padding
+        )
+
 
 def group_words_into_lines(words: Iterable[WordBox], line_tol: float = 4.0) -> List[str]:
     sorted_words = sorted(words, key=lambda w: (w.top, w.x0))
@@ -254,15 +262,13 @@ def group_words_into_lines(words: Iterable[WordBox], line_tol: float = 4.0) -> L
 
 
 def assign_words(rectangles: List[RectEntity], words: List[WordBox], padding: float = 1.5) -> None:
-    for rect in rectangles:
-        for word in words:
-            if (
-                word.x0 >= rect.x0 - padding
-                and word.x1 <= rect.x1 + padding
-                and word.top >= rect.top - padding
-                and word.bottom <= rect.bottom + padding
-            ):
+    """Assign each word to the smallest rectangle that contains it."""
+    ordered = sorted(rectangles, key=lambda r: r.area)
+    for word in words:
+        for rect in ordered:
+            if rect.contains_word(word, padding=padding):
                 rect.words.append(word)
+                break
 
 
 def detect_rect_hierarchy(rectangles: List[RectEntity], padding: float = 2.0) -> None:
@@ -335,20 +341,15 @@ def _node_title(node: Dict[str, Any]) -> str:
     return "Unnamed box"
 
 
-def _describe_node(node: Dict[str, Any], depth: int = 0) -> List[str]:
-    indent = "  " * depth
-    title = _node_title(node)
+def _ascii_tree_lines(node: Dict[str, Any], prefix: str = "", is_last: bool = True) -> List[str]:
+    connector = "└─ " if is_last else "├─ "
+    lines = [f"{prefix}{connector}{_node_title(node)}"]
     children = node.get("children") or []
-
-    if children:
-        child_titles = ", ".join(_node_title(child) for child in children)
-        line = f"{indent}- Box '{title}' contains {len(children)} child box(es): {child_titles}."
-    else:
-        line = f"{indent}- Box '{title}' has no nested boxes."
-
-    lines = [line]
-    for child in children:
-        lines.extend(_describe_node(child, depth + 1))
+    if not children:
+        return lines
+    child_prefix = prefix + ("   " if is_last else "│  ")
+    for idx, child in enumerate(children):
+        lines.extend(_ascii_tree_lines(child, child_prefix, idx == len(children) - 1))
     return lines
 
 
@@ -362,9 +363,13 @@ def describe_simplified_layout(layout: Dict[str, Any]) -> str:
         return "\n".join(lines)
 
     for idx, tree in enumerate(trees, 1):
-        root_title = _node_title(tree)
-        lines.append(f"Root box {idx}: '{root_title}'.")
-        lines.extend(_describe_node(tree, depth=1))
+        lines.append(f"Root {idx}: {_node_title(tree)}")
+        children = tree.get("children") or []
+        if not children:
+            lines.append("  (no child boxes)")
+            continue
+        for child_idx, child in enumerate(children):
+            lines.extend(_ascii_tree_lines(child, "", child_idx == len(children) - 1))
 
     return "\n".join(lines)
 
