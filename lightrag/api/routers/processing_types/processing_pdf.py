@@ -287,7 +287,6 @@ def serialize_rectangles(rectangles: List[RectEntity]) -> List[Dict[str, Any]]:
                 "height": rect.height,
                 "area": rect.area,
                 "label": " ".join(line for line in lines if line).strip(),
-                "word_count": len(rect.words),
                 "parent_id": rect.parent_id,
             }
         )
@@ -300,7 +299,6 @@ def build_page_hierarchy(rectangles: List[Dict[str, Any]], keep_geometry: bool =
         node: Dict[str, Any] = {
             "rect_id": rect["rect_id"],
             "text": rect["label"],
-            "word_count": rect["word_count"],
             "children": [],
         }
         if keep_geometry:
@@ -316,6 +314,11 @@ def build_page_hierarchy(rectangles: List[Dict[str, Any]], keep_geometry: bool =
             nodes[parent_id]["children"].append(node)
         else:
             roots.append(node)
+
+    for node in nodes.values():
+        if not node["children"]:
+            node.pop("children", None)
+
     return roots
 
 

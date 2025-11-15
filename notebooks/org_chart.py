@@ -255,7 +255,6 @@ def serialize_rectangles(rectangles: List[RectEntity]) -> List[Dict[str, Any]]:
             "height": rect.height,
             "area": rect.area,
             "label": rect.label,
-            "word_count": len(rect.words),
             "parent_id": rect.parent_id,
         }
         for rect in rectangles
@@ -406,7 +405,6 @@ def summarize_hierarchy(data: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "label": rect["label"],
                     "parent_id": rect["parent_id"],
                     "area": rect["area"],
-                    "word_count": rect["word_count"],
                 }
             )
     return rows
@@ -439,7 +437,6 @@ def build_page_hierarchy(
         node = {
             "rect_id": rect["rect_id"],
             "text": rect["label"],
-            "word_count": rect["word_count"],
             "children": [],
         }
         if keep_geometry:
@@ -455,6 +452,9 @@ def build_page_hierarchy(
             nodes[parent_id]["children"].append(node)
         else:
             roots.append(node)
+    for node in nodes.values():
+        if not node["children"]:
+            node.pop("children", None)
     return roots
 
 
