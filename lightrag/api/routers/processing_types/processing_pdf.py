@@ -1027,6 +1027,16 @@ class PdfFileProcessor(BaseFileProcessor):
 
                 for page_num, page in enumerate(reader.pages, 1):
                     infographic_page = is_infographic_page(page)
+                    org_chart_layout_block = ""
+                    if infographic_page and org_chart_extractor:
+                        try:
+                            layout_json = org_chart_extractor.extract_page_layout(page_num)
+                            if layout_json:
+                                org_chart_layout_block = f"[OrgChartLayoutJSON]\n{layout_json}\n"
+                        except Exception as exc:
+                            logger.debug(
+                                f"[File Extraction]Org-chart extraction failed on page {page_num}: {exc}"
+                            )
 
                     if infographic_page:
                         infographic_pages.append(page_num)
@@ -1042,6 +1052,7 @@ class PdfFileProcessor(BaseFileProcessor):
                                 content += (
                                     f"[Infographic Page {page_num}]\n"
                                     f"{description.strip()}\n"
+                                    f"{org_chart_layout_block}"
                                 )
                                 continue
                             else:
@@ -1066,19 +1077,8 @@ class PdfFileProcessor(BaseFileProcessor):
                         )
                         image_descriptions = ""
 
-                    extra_layout = ""
-                    if org_chart_extractor and not infographic_page:
-                        try:
-                            layout_json = org_chart_extractor.extract_page_layout(page_num)
-                            if layout_json:
-                                extra_layout = f"[OrgChartLayoutJSON]\n{layout_json}\n"
-                        except Exception as exc:
-                            logger.debug(
-                                f"[File Extraction]Org-chart extraction failed on page {page_num}: {exc}"
-                            )
-
                     # Combine page text, image descriptions, and layout info
-                    content += page_text + "\n" + image_descriptions + extra_layout
+                    content += page_text + "\n" + image_descriptions + org_chart_layout_block
 
                 if infographic_pages:
                     logger.info(
