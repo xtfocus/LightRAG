@@ -1,3 +1,4 @@
+
 """
 Org Chart / Treemap Extraction Utilities
 
@@ -235,12 +236,10 @@ def assign_words_to_rectangles(
     words: List[Word],
     padding: float = 1.5,
 ) -> None:
-    ordered = sorted(rectangles, key=lambda r: r.area)
-    for word in words:
-        for rect in ordered:
+    for rect in rectangles:
+        for word in words:
             if rect.contains_word(word, padding=padding):
                 rect.words.append(word)
-                break
 
 
 def serialize_rectangles(rectangles: List[RectEntity]) -> List[Dict[str, Any]]:
@@ -257,6 +256,7 @@ def serialize_rectangles(rectangles: List[RectEntity]) -> List[Dict[str, Any]]:
             "height": rect.height,
             "area": rect.area,
             "label": rect.label,
+            "word_count": len(rect.words),
             "parent_id": rect.parent_id,
         }
         for rect in rectangles
@@ -265,9 +265,11 @@ def serialize_rectangles(rectangles: List[RectEntity]) -> List[Dict[str, Any]]:
 
 def detect_hierarchy(rectangles: List[RectEntity], padding: float = 2.0) -> None:
     """Annotate rectangles with parent IDs based on containment."""
-    sorted_rects = sorted(rectangles, key=lambda r: r.area)
-    for idx, child in enumerate(sorted_rects):
-        for parent in sorted_rects[idx + 1 :]:
+    sorted_rects = sorted(rectangles, key=lambda r: r.area, reverse=True)
+    for child in sorted_rects:
+        for parent in sorted_rects:
+            if parent is child:
+                continue
             if parent.area <= child.area:
                 continue
             if is_rect_inside(child, parent, padding=padding):
@@ -405,6 +407,7 @@ def summarize_hierarchy(data: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "label": rect["label"],
                     "parent_id": rect["parent_id"],
                     "area": rect["area"],
+                    "word_count": rect["word_count"],
                 }
             )
     return rows
@@ -437,6 +440,7 @@ def build_page_hierarchy(
         node = {
             "rect_id": rect["rect_id"],
             "text": rect["label"],
+            "word_count": rect["word_count"],
             "children": [],
         }
         if keep_geometry:
@@ -452,9 +456,6 @@ def build_page_hierarchy(
             nodes[parent_id]["children"].append(node)
         else:
             roots.append(node)
-    for node in nodes.values():
-        if not node["children"]:
-            node.pop("children", None)
     return roots
 
 
@@ -472,41 +473,6 @@ def simplify_org_chart_result(
             for page in data["pages"]
         ],
     }
-
-
-def _node_title(node: Dict[str, Any]) -> str:
-    text = (node.get("text") or "").strip()
-    return text if text else "Unnamed box"
-
-
-def _ascii_tree_lines(node: Dict[str, Any], prefix: str = "", is_last: bool = True) -> List[str]:
-    connector = "└─ " if is_last else "├─ "
-    lines = [f"{prefix}{connector}{_node_title(node)}"]
-    children = node.get("children") or []
-    if not children:
-        return lines
-    child_prefix = prefix + ("   " if is_last else "│  ")
-    for idx, child in enumerate(children):
-        lines.extend(_ascii_tree_lines(child, child_prefix, idx == len(children) - 1))
-    return lines
-
-
-def describe_simplified_page(page_layout: Dict[str, Any]) -> str:
-    page_number = page_layout.get("page_number")
-    lines = [f"Org chart layout for page {page_number}:"]
-    trees = page_layout.get("trees") or []
-    if not trees:
-        lines.append("No box hierarchy detected.")
-        return "\n".join(lines)
-    for idx, tree in enumerate(trees, 1):
-        lines.append(f"Root {idx}: {_node_title(tree)}")
-        children = tree.get("children") or []
-        if not children:
-            lines.append("  (no child boxes)")
-            continue
-        for child_idx, child in enumerate(children):
-            lines.extend(_ascii_tree_lines(child, "", child_idx == len(children) - 1))
-    return "\n".join(lines)
 
 
 if __name__ == "__main__":
@@ -570,6 +536,3 @@ if __name__ == "__main__":
         )
         saved_path = save_results(simplified, args.simplify_json)
         print(f"Saved simplified hierarchy to {saved_path}")
-        for page in simplified["pages"]:
-            print(describe_simplified_page(page))
-

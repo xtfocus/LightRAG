@@ -266,9 +266,9 @@ def assign_words(rectangles: List[RectEntity], words: List[WordBox], padding: fl
 
 
 def detect_rect_hierarchy(rectangles: List[RectEntity], padding: float = 2.0) -> None:
-    ordered = sorted(rectangles, key=lambda r: r.area, reverse=True)
-    for child in ordered:
-        for parent in ordered:
+    ordered = sorted(rectangles, key=lambda r: r.area)
+    for idx, child in enumerate(ordered):
+        for parent in ordered[idx + 1 :]:
             if parent is child or parent.area <= child.area:
                 continue
             if (
